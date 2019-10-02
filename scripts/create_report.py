@@ -4,6 +4,7 @@
 This is the script creating the report.
 """
 
+import logging
 import matplotlib.pyplot as plt
 from io import BytesIO
 from reportlab.pdfgen import canvas
@@ -12,6 +13,8 @@ from svglib.svglib import svg2rlg
 
 
 def create_report():
+
+    logging.info("Creating report ...")
 
     fig = plt.figure(figsize=(4, 3))
     plt.plot([1,2,3,4])

@@ -4,8 +4,12 @@
 This is the script extracting the relevant data from the DICOMs.
 """
 
+import logging
+
 
 def extract_data_from_DICOMs():
+
+    logging.info("Extracting data from DICOMs ...")
 
     return
 
