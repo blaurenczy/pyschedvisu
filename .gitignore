@@ -4,3 +4,4 @@ dist
 MATLAB
 database*
 scripts/__pycache__
+py3env
