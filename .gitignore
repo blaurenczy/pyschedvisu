@@ -1,0 +1,6 @@
+build
+dist
+*.pdf
+MATLAB
+database*
+scripts/__pycache__
