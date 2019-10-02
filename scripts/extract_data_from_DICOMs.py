@@ -9,7 +9,7 @@ import logging
 
 def extract_data_from_DICOMs():
 
-    logging.info("Extracting data from DICOMs ...")
+    logging.info("Extracting data from DICOMs")
 
     return
 
