@@ -5,6 +5,7 @@ This is the master script running all the steps.
 """
 
 import logging
+from datetime import date
 from retrieve_DICOMs_from_PACS import retrieve_DICOMs_from_PACS
 from extract_data_from_DICOMs import extract_data_from_DICOMs
 from create_report import create_report
