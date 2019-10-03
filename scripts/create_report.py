@@ -21,7 +21,7 @@ def create_report(start_date=date.today(), end_date=date.today() - timedelta(day
     df = pd.read_csv('database.csv')
 
     logging.info("Creating PDF file")
-    c = canvas.Canvas('schedvisu.pdf', pagesize=A4)
+    c = canvas.Canvas('output/schedvisu.pdf', pagesize=A4)
     canvas_width, canvas_height = A4
     print(canvas_width, canvas_height)
 

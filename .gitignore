@@ -1,6 +1,6 @@
 build
 dist
-*.pdf
+output
 MATLAB
 database*
 scripts/__pycache__
