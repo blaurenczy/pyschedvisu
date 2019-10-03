@@ -19,13 +19,18 @@ def run_all():
     # get date range
     start_date = date(2018, 7, 2)
     end_date = date(2018, 7, 6)
-    n_days = (end_date - start_date).days
+    # end_date = date(2018, 7, 13)
+    n_days = (end_date - start_date).days + 1
 
-    logging.info("Using dates: %s - %s (%d days)".format(start_date, end_date, n_days))
+    # create some test variables
+    machine_name = 'Discovery 690'
+
+    logging.info(f"Using dates: {start_date} - {end_date} ({n_days} days)")
+    logging.info(f"Using machine: {machine_name}")
 
     retrieve_DICOMs_from_PACS()
     extract_data_from_DICOMs()
-    create_report(start_date, end_date)
+    create_report(machine_name, start_date, end_date)
 
     logging.info("Finished running SchedVisu workflow.")
 
