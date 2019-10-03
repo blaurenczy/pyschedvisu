@@ -1,6 +1,7 @@
 build
 dist
 output
+PACS_data
 MATLAB
 database*
 scripts/__pycache__
