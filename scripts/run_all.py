@@ -16,21 +16,23 @@ def run_all():
     logging.basicConfig(format='%(asctime)s|%(levelname)s| %(message)s', level=logging.INFO)
     logging.info("Started running SchedVisu workflow")
 
-    # get date range
-    start_date = date(2018, 7, 2)
-    end_date = date(2018, 7, 6)
-    # end_date = date(2018, 7, 13)
-    n_days = (end_date - start_date).days + 1
+    # dictionary holding all the configuration information
+    config = {}
 
     # create some test variables
-    machine_name = 'Discovery 690'
+    config['start_date'] = date(2018, 7, 2)
+    config['end_date'] = date(2018, 7, 6)
+    config['n_days'] = (config['end_date'] - config['start_date']).days + 1
+    config['machine_name'] = 'Discovery 690'
+    config['n_minutes_for_gap'] = 30
+    config['n_months_average_for_slot_number'] = 6
 
-    logging.info(f"Using dates: {start_date} - {end_date} ({n_days} days)")
-    logging.info(f"Using machine: {machine_name}")
+    logging.info("Using dates: {start_date} - {end_date} ({n_days} days)".format(**config))
+    logging.info("Using machine: {machine_name}".format(**config))
 
     retrieve_DICOMs_from_PACS()
     extract_data_from_DICOMs()
-    create_report(machine_name, start_date, end_date)
+    create_report(config)
 
     logging.info("Finished running SchedVisu workflow.")
 
