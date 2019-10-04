@@ -30,9 +30,9 @@ def run_all():
     logging.info("Using dates: {start_date} - {end_date} ({n_days} days)".format(**config))
     logging.info("Using machine: {machine_name}".format(**config))
 
-    retrieve_DICOMs_from_PACS()
-    extract_data_from_DICOMs()
-    create_report(config)
+    # retrieve_DICOMs_from_PACS()
+    extract_data_from_DICOMs(config)
+    # create_report(config)
 
     logging.info("Finished running SchedVisu workflow.")
 

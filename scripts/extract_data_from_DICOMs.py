@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 
-"""
-This is the script extracting the relevant data from the DICOMs.
-"""
-
 import logging
 
 
-def extract_data_from_DICOMs():
+def extract_data_from_DICOMs(config):
+    """
+    Extract the relevant information from the DICOM files and store them in a database.
+    Args:
+        config (dict): a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+    Returns:
+        None
+    """
 
     logging.info("Extracting data from DICOMs")
 
