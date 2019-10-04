@@ -14,6 +14,8 @@ def extract_data_from_DICOMs(config):
 
     logging.info("Extracting data from DICOMs")
 
+    # folder structure: {ROOT}/PACS_data/{YYYY_mm}/{YYYYmmdd}/{DICOM_FILE}
+
     return
 
 
