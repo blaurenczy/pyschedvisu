@@ -1,8 +1,0 @@
-build
-dist
-output
-PACS_data
-MATLAB
-database*
-scripts/__pycache__
-py3env
