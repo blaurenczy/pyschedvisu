@@ -7,9 +7,9 @@ This is the master script running all the steps.
 import logging
 from configparser import ConfigParser
 from datetime import date
-from retrieve_DICOMs_from_PACS import retrieve_DICOMs_from_PACS
-from extract_data_from_DICOMs import extract_data_from_DICOMs
-from create_report import create_report
+from datetime import datetime
+from scripts.retrieve_data_from_PACS import retrieve_data_from_PACS
+from scripts.create_report import create_report
 
 
 def run_all():
@@ -18,23 +18,22 @@ def run_all():
 
     logging.info("Reading configuration")
     # read in the configuration file
-	config = ConfigParser()
-	config.read('config.ini')
+    config = ConfigParser()
+    config.read('config.ini')
 
     # create some test variables
-    config['start_date'] = date(2018, 7, 2)
-    config['end_date'] = date(2018, 7, 6)
-    config['n_days'] = (config['end_date'] - config['start_date']).days + 1
-    config['machine_name'] = 'Discovery 690'
+    start_date = datetime.strptime(config['main']['start_date'], '%Y%m%d')
+    end_date = datetime.strptime(config['main']['end_date'], '%Y%m%d')
+    config.set('main', 'machine_name', 'Discovery 690')
+    config.set('main', 'n_days', str((end_date - start_date).days + 1))
 
-	# run the workflow
+    # run the workflow
     logging.info("Starting SchedVisu workflow")
-    retrieve_DICOMs_from_PACS(config)
-    # extract_data_from_DICOMs(config)
+    #retrieve_data_from_PACS(config)
     # create_report(config)
     logging.info("Finished running SchedVisu workflow")
 
-    return
+    return config
 
 
 if __name__ == '__main__':
