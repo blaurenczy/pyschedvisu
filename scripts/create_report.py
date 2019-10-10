@@ -18,7 +18,7 @@ def create_report(config):
     Generates a PDF report by extracting the relevant data from the database, processing it and drawing the relevant
     plots, tables and annotations.
     Args:
-        config (dict): a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict): a dictionary holding all the necessary parameters
     Returns:
         None
     """
