@@ -29,7 +29,7 @@ def run_all():
 
     # run the workflow
     logging.info("Starting SchedVisu workflow")
-    #retrieve_data_from_PACS(config)
+    # retrieve_data_from_PACS(config)
     # create_report(config)
     logging.info("Finished running SchedVisu workflow")
 
