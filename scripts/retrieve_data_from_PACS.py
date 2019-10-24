@@ -28,6 +28,96 @@ def retrieve_data_from_PACS(config):
     return
 
 
+def find_PT_studies_for_day(config, study_date):
+    """
+    Finds all PT studies for a single day from the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        study_date (str): a string specifying the day to query
+    Returns:
+        df (DataFrame): a DataFrame containing all retrieved studies
+    """
+
+    logging.info("Retrieving all studies from PACS for day {}".format(study_date))
+
+    # create the query dataset
+    query_ds = Dataset()
+
+    # parameters for filtering
+    query_ds.QueryRetrieveLevel = 'STUDY'
+    query_ds.ModalitiesInStudy = 'PT'
+    query_ds.StudyDate = study_date
+
+    # parameters to fetch
+    query_ds.StudyTime  = ''
+    query_ds.StudyInstanceUID = ''
+    query_ds.PatientID = ''
+    query_ds.StudyDescription = ''
+    # query_ds.InstitutionName = ''
+    # query_ds.ReferringPhysicianName = ''
+
+    # display the query dataset
+    logging.debug('Query Dataset:')
+    for s in str(query_ds).split('\n'): logging.debug('    ' + s)
+
+    # do the query (C-FIND)
+    df_studies = find_data(config, query_ds)
+
+    # drop unwanted columns and display
+    to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID',
+                        'Issuer of Patient ID']
+    df_studies = df_studies.drop(to_drop_columns, axis=1)
+
+    return df_studies
+
+
+def find_series_for_study(config, study_row):
+    """
+    Finds all studies for a single day from the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        study_row (Series): a pandas Series (row) specifying the study to query
+    Returns:
+        df (DataFrame): a DataFrame containing all retrieved studies
+    """
+
+    logging.info("Retrieving all studies from PACS for day {}".format(study_date))
+    series_level_filters = ['Study Date', 'Patient ID']
+    to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID', 'Issuer of Patient ID']
+    sort_columns = ['Series Time', 'Number of Series Related Instances']
+
+    logging.info('DataFrame row:\n' + str(study_row))
+
+    # create the query dataset
+    query_ds = create_dataset_from_dataframe_row(study_row, 'SERIES', incl=series_level_filters)
+
+    # parameters for filtering
+    query_ds.SeriesDate = query_ds.StudyDate
+    query_ds.Modality = ['PT', 'CT']
+
+    # parameters to fetch
+    query_ds.SeriesInstanceUID = ''
+    query_ds.StudyInstanceUID = ''
+    query_ds.SeriesTime = ''
+    query_ds.StudyTime  = ''
+    query_ds.NumberOfSeriesRelatedInstances = ''
+    query_ds.SeriesDescription = ''
+
+    # display the query dataset
+    logging.info('Query Dataset:')
+    for s in str(query_ds).split('\n'): logging.info('    ' + s)
+
+    # do the query (C-FIND)
+    df_series = find_data(config, query_ds)
+
+    # drop unwanted columns, sort and display
+    df_series = df_series.drop(to_drop_columns, axis=1)
+    df_series.sort_values(sort_columns, inplace=True)
+    df_series.reset_index(drop=True, inplace=True)
+
+    return df_series
+
+
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
     """
     Creates a pydicom Dataset for querying based on the content of an input DataFrame's row, provided
