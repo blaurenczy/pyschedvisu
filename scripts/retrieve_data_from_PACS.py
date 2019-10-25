@@ -2,6 +2,8 @@
 
 import logging
 
+from datetime import datetime as dt
+
 from pandas import DataFrame
 
 from pydicom.dataset import Dataset
@@ -73,20 +75,21 @@ def find_PT_studies_for_day(config, study_date):
 
 def find_series_for_study(config, study_row):
     """
-    Finds all studies for a single day from the PACS.
+    Finds all series for a study from the PACS.
     Args:
         config (dict): a dictionary holding all the necessary parameters
         study_row (Series): a pandas Series (row) specifying the study to query
     Returns:
-        df (DataFrame): a DataFrame containing all retrieved studies
+        df (DataFrame): a DataFrame containing all retrieved series
     """
 
-    logging.info("Retrieving all studies from PACS for day {}".format(study_date))
+    logging.info("Retrieving all series from PACS for study {}".format(study_row['Study Instance UID']))
+
     series_level_filters = ['Study Date', 'Patient ID']
     to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID', 'Issuer of Patient ID']
     sort_columns = ['Series Time', 'Number of Series Related Instances']
 
-    logging.info('DataFrame row:\n' + str(study_row))
+    logging.debug('DataFrame row:\n' + str(study_row))
 
     # create the query dataset
     query_ds = create_dataset_from_dataframe_row(study_row, 'SERIES', incl=series_level_filters)
@@ -104,11 +107,15 @@ def find_series_for_study(config, study_row):
     query_ds.SeriesDescription = ''
 
     # display the query dataset
-    logging.info('Query Dataset:')
-    for s in str(query_ds).split('\n'): logging.info('    ' + s)
+    logging.debug('Query Dataset:')
+    for s in str(query_ds).split('\n'): logging.debug('    ' + s)
 
     # do the query (C-FIND)
     df_series = find_data(config, query_ds)
+
+    # filter out some Series that do not contain any information (no AcquisitionTime or such)
+    series_descr_to_exclude = ['PET Statistics', 'Patient Protocol', 'PET Dose Report', 'Results MM Oncology Reading']
+    df_series = df_series[~df_series['Series Description'].isin(series_descr_to_exclude)].reset_index(drop=True)
 
     # drop unwanted columns, sort and display
     df_series = df_series.drop(to_drop_columns, axis=1)
@@ -118,6 +125,115 @@ def find_series_for_study(config, study_row):
     return df_series
 
 
+def fetch_info_for_series(config, series_row):
+    """
+    Get some information (start & end time, machine, etc.) for a series based on the images found in the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        series_row (Series): a pandas Series (row) specifying the series to query
+    Returns:
+        info (dict): a dictionary containing all the retrieved information
+    """ 
+    
+    image_level_filters = ['Patient ID', 'Study Date', 'Series Instance UID', 'Modality']
+    to_fetch_params = ['ManufacturerModelName', 'AcquisitionTime']
+
+    logging.info('Fetching info for {}|{}|{}|PID:{}|{}...{}'.format(*series_row[['Study Date', 'Series Time', 'Modality',
+        'Patient ID']], series_row['Series Instance UID'][:8], series_row['Series Instance UID'][-4:]))
+    
+    # create the query dataset
+    query_ds = create_dataset_from_dataframe_row(series_row, 'IMAGE', incl=image_level_filters)
+    # add some more filters
+    query_ds.InstanceNumber = ['1', series_row['Number of Series Related Instances']]
+    # display the Dataset
+    logging.debug('Query Dataset:')
+    for s in str(query_ds).split('\n'): logging.debug('    ' + s)
+
+    # fetch the data (C-MOVE)
+    dfs, _ = get_data(config, query_ds, to_fetch_params)
+    dfs.reset_index(drop=True, inplace=True)
+    
+    # if no data is found, skip with error
+    if len(dfs) == 0:
+        logging.error('  ERROR, no data found.')
+        return None
+    # if there is only one row, duplicate it
+    elif len(dfs) == 1:
+        dfs.loc[1, :] = dfs.loc[0, :]
+    # if there are too many rows, skip with error
+    elif len(dfs) > 2:
+        logging.error('  ERROR, too many rows found ({}).'.format(len(df)))
+        return None
+    
+    # create a dictionary to return the gathered information
+    info = {
+        'start_time': str(df.loc[0, 'AcquisitionTime']).split('.')[0],
+        'end_time': str(df.loc[1, 'AcquisitionTime']).split('.')[0],
+        'machine': df.loc[0, 'ManufacturerModelName']
+    }
+    
+    return info
+
+
+
+def prunes_series_by_time_overlap(df_series):
+    """
+    Prune the input series DataFrame based on start/end time overlaps.
+    Args:
+        df_series (DatFrame): a pandas DataFrame to check for time overlaps
+    Returns:
+        df_series (DatFrame): the pruned pandas DataFrame
+    """
+    
+    logging.info("Pruning series for time overlap")
+    
+    # time format
+    FMT = '%H%M%S'
+    
+    # remove duplicates and sort (rows that have exactly the same start/end times are redundant)
+    df_series.drop_duplicates(['start_time', 'end_time'], inplace=True)
+    df_series = df_series[(~df_series['start_time'].isnull()) & (df_series['start_time'] != 'nan')]
+    df_series = df_series.sort_values('start_time')
+
+    # prune series based on start/end time overlaps:
+    #   as long as some overlap was found, start over
+    overlap_found = True
+    while overlap_found:
+
+        # make sure we only loop if an overlap was found, and reset the index of the DataFrame
+        overlap_found = False
+        df_series.reset_index(drop=True, inplace=True)
+
+        # go through each row
+        for i_serie in range(1, len(df_series)):
+
+            # get the start/end times of the current row
+            curr_start = dt.strptime(df_series.iloc[i_serie]['start_time'], FMT)
+            curr_end = dt.strptime(df_series.iloc[i_serie]['end_time'], FMT)
+            # cget the start/end times of the previous row
+            prev_start = dt.strptime(df_series.iloc[i_serie - 1]['start_time'], FMT)
+            prev_end = dt.strptime(df_series.iloc[i_serie - 1]['end_time'], FMT)
+
+            # check for an overlap between the current and the previous row
+            latest_start = max(curr_start, prev_start)
+            earliest_end = min(curr_end, prev_end)
+            delta = (earliest_end - latest_start).seconds
+            overlap = max(0, delta)
+
+            # if there is no overlap, then the current time range is fully
+            #   overlapping with the previous row's range
+            overlap_found = overlap == 0
+            logging.debug('{:2}/{}: checking if {}-{} is included in {}-{}: overlap = {}'.format(i_serie, len(df_series) - 1,
+                curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT), prev_end.strftime(FMT), overlap_found))
+
+            # if any overlap was found, remove the redundant row and start over
+            if overlap_found:
+                df_series.drop(i_serie,inplace=True)
+                break
+
+    return df_series
+   
+   
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
     """
     Creates a pydicom Dataset for querying based on the content of an input DataFrame's row, provided
@@ -131,6 +247,8 @@ def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
         query_dataset (pydicom.dataset.Dataset): a Dataset object holding the filtering parameters
     """
 
+    logging.debug("Creating dataset from row")
+    
     # by default, include all columns
     if len(incl) == 0:
         incl = list(df_row.axes[0])
@@ -185,6 +303,8 @@ def get_data(config, query_dataset, return_fields):
         datasets (list): a list of the retrieved datasets
     """
 
+    logging.debug("Getting data")
+    
     # initialize a global DataFrame to store the results
     global df
     df = DataFrame(columns = return_fields)
@@ -238,6 +358,8 @@ def find_data(config, query_dataset):
     Returns:
         df (DataFrame): a DataFrame containing all retrieved data
     """
+    
+    logging.debug("Finding data")
     
     # initialize a DataFrame to store the results
     df = DataFrame()
