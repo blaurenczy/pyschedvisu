@@ -123,8 +123,8 @@ def find_series_for_study(config, study_row):
 
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     series_descr_patterns_to_exclude = ['.+statistics$', '.+report$', '.+results$', '.+protocol$', '^defaultseries$',
-        '^results.+', '^fusion.+AC$', '^processed images.*', '^4DM.+', '.+SUV5$', '^save_screens$', '^key_images$',
-        '^fused.+', '^mip.*', '^mpr\..*', '^compact.+']
+        '^results.+', '^fusion.*', '^processed images.*', '^4DM.+', '.+SUV5$', '^save_screens$', '^key_images$',
+        '^fused.+', '^mip.*', '^mpr\..*', '^compact.+', '^images medrad intego$']
     for descr_pattern in series_descr_patterns_to_exclude:
         to_exclude = df_series['Series Description'].str.match(descr_pattern, case=False)
         if to_exclude.sum() > 0:
@@ -177,12 +177,16 @@ def fetch_info_for_series(config, series_row):
 
     # fetch the data (C-MOVE)
     df, datasets = get_data(config, query_ds, to_fetch_fields)
+    
+    # sort the data and reset the index. Warning: this does not guarantee that the first index (0) has
+    #    the highest InstanceNumber. Data is sorted according to the AcquisitionTime
     df = df.sort_values('AcquisitionTime')
     df.reset_index(drop=True, inplace=True)
     
     # if no data is found, skip with error
     if len(df) == 0:
-        logging.error('  ERROR for {}: no data found'.format(series_string))
+        logging.error('  ERROR for {}: no data found. "Series Description" field = "{}"'
+                      .format(series_string, series_row['Series Description']))
         return
     
     # if there are too many rows, skip with error
@@ -194,9 +198,36 @@ def fetch_info_for_series(config, series_row):
     elif len(df) == 1:
         df.loc[1, :] = df.loc[0, :]
     
+    # if the image type is "SECONDARY", this means that we are not dealing with a raw image but with a processed image
     if 'SECONDARY' in df.loc[0, 'ImageType']:
-        logging.error('  ERROR for {}: secondary image type found: "{}".'.format(series_string, '-'.join(df.loc[0, 'ImageType'])))
-        return
+        
+        # try to rescue this series by looking at the before-last image
+        if int(series_row['Number of Series Related Instances']) > 1:
+            logging.warning('  WARNING for {}: secondary image type found. Trying to recover'.format(series_string))
+            # try to do another query for the before-last image
+            query_ds.InstanceNumber = str(int(series_row['Number of Series Related Instances']) - 1)
+            # fetch the data (C-MOVE)
+            df_before_last, _ = get_data(config, query_ds, to_fetch_fields)
+            # if no data was found, abort
+            if len(df_before_last) == 0:
+                logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" = "{}"'
+                          .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
+                return
+            # if data is still secondary, abort
+            elif 'SECONDARY' in df_before_last.iloc[0]['ImageType']: 
+                logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" = "{}"'
+                          .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
+                return 
+            # copy the data instead of the last frame
+            df.loc[0, :] = df_before_last.reset_index(drop=True).loc[0, :]
+            logging.info('  INFO for {}: secondary image type recovered: "{}". '
+                          .format(series_string, '-'.join(df.loc[0, 'ImageType'])))
+            
+        # if this series does not have the option of going for the before-last InstanceNumber, abort
+        else:
+            logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" field = "{}"'
+                      .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
+            return
         
     # exrtact the start and end times
     start_time_str = str(df.loc[0, 'AcquisitionTime']).split('.')[0]
@@ -322,7 +353,7 @@ def prunes_series_by_time_overlap(df):
                 logging.info('{:2}/{}: found an overlap: {}-{} is included in {}-{}'.format(i, len(df) - 1,
                     curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT),
                     prev_end.strftime(FMT)))
-                df = df.drop(i)
+                df = df.drop(df.index[i])
                 break
 
     return df
