@@ -3,8 +3,11 @@
 import logging
 
 from datetime import datetime as dt
+from datetime import timedelta
 
 from pandas import DataFrame
+
+from IPython.core import display as ICD
 
 from pydicom.dataset import Dataset
 from pydicom.tag import Tag
@@ -30,12 +33,13 @@ def retrieve_data_from_PACS(config):
     return
 
 
-def find_PT_studies_for_day(config, study_date):
+def find_studies_for_day(config, study_date, modality):
     """
-    Finds all PT studies for a single day from the PACS.
+    Finds all studies with given modality for a single day from the PACS.
     Args:
         config (dict): a dictionary holding all the necessary parameters
         study_date (str): a string specifying the day to query
+        modality (str): a string specifying the modality to query ('PT', 'NM' or 'CT')
     Returns:
         df (DataFrame): a DataFrame containing all retrieved studies
     """
@@ -47,7 +51,7 @@ def find_PT_studies_for_day(config, study_date):
 
     # parameters for filtering
     query_ds.QueryRetrieveLevel = 'STUDY'
-    query_ds.ModalitiesInStudy = 'PT'
+    query_ds.ModalitiesInStudy = modality
     query_ds.StudyDate = study_date
 
     # parameters to fetch
@@ -55,8 +59,7 @@ def find_PT_studies_for_day(config, study_date):
     query_ds.StudyInstanceUID = ''
     query_ds.PatientID = ''
     query_ds.StudyDescription = ''
-    # query_ds.InstitutionName = ''
-    # query_ds.ReferringPhysicianName = ''
+    query_ds.ReferringPhysicianName = ''
 
     # display the query dataset
     logging.debug('Query Dataset:')
@@ -96,7 +99,7 @@ def find_series_for_study(config, study_row):
 
     # parameters for filtering
     query_ds.SeriesDate = query_ds.StudyDate
-    query_ds.Modality = ['PT', 'CT']
+    query_ds.Modality = ['NM', 'PT', 'CT']
 
     # parameters to fetch
     query_ds.SeriesInstanceUID = ''
@@ -105,6 +108,8 @@ def find_series_for_study(config, study_row):
     query_ds.StudyTime  = ''
     query_ds.NumberOfSeriesRelatedInstances = ''
     query_ds.SeriesDescription = ''
+    query_ds.SeriesNumber = ''
+    query_ds.ProtocolName = ''
 
     # display the query dataset
     logging.debug('Query Dataset:')
@@ -113,9 +118,19 @@ def find_series_for_study(config, study_row):
     # do the query (C-FIND)
     df_series = find_data(config, query_ds)
 
-    # filter out some Series that do not contain any information (no AcquisitionTime or such)
-    series_descr_to_exclude = ['PET Statistics', 'Patient Protocol', 'PET Dose Report', 'Results MM Oncology Reading']
-    df_series = df_series[~df_series['Series Description'].isin(series_descr_to_exclude)].reset_index(drop=True)
+    # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
+    series_descr_to_exclude = ['PET Statistics', 'Patient Protocol', 'PET Dose Report',
+                               'Results MM Oncology Reading', 'KEY_IMAGES', 'DefaultSeries',
+                               'Renal_Results']
+    df_series = df_series[~df_series['Series Description'].isin(series_descr_to_exclude)]
+    df_series = df_series[~df_series['Series Description'].str.match('^4DM')]
+    
+    series_protocol_to_exclude = ['SCREENCAPTURE']
+    df_series = df_series[~df_series['Protocol Name'].isin(series_protocol_to_exclude)]
+    
+    # filter out irrelevant series
+    df_series.reset_index(drop=True, inplace=True)
+    df_series = df_series.reset_index(drop=True)
 
     # drop unwanted columns, sort and display
     df_series = df_series.drop(to_drop_columns, axis=1)
@@ -135,41 +150,104 @@ def fetch_info_for_series(config, series_row):
         info (dict): a dictionary containing all the retrieved information
     """ 
     
+    # fields to use as filters to get the image
     image_level_filters = ['Patient ID', 'Study Date', 'Series Instance UID', 'Modality']
-    to_fetch_params = ['ManufacturerModelName', 'AcquisitionTime']
-
-    logging.info('Fetching info for {}|{}|{}|PID:{}|{}...{}'.format(*series_row[['Study Date', 'Series Time', 'Modality',
-        'Patient ID']], series_row['Series Instance UID'][:8], series_row['Series Instance UID'][-4:]))
+    
+    # fields to fetch from the DICOM header
+    to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime',
+                       'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052', 'Modality']
+    
+    series_string = '{}|{}|{}|PID:{}|{}...{}'.format(*series_row[['Study Date', 'Series Time', 'Modality',
+        'Patient ID']], series_row['Series Instance UID'][:8], series_row['Series Instance UID'][-4:])
+    logging.info('Fetching info for {}'.format(series_string))
     
     # create the query dataset
     query_ds = create_dataset_from_dataframe_row(series_row, 'IMAGE', incl=image_level_filters)
-    # add some more filters
-    query_ds.InstanceNumber = ['1', series_row['Number of Series Related Instances']]
+    # add some more filters for the 'PT' modality
+    if series_row['Modality'] == 'PT' or series_row['Modality'] == 'CT':
+        query_ds.InstanceNumber = ['1', series_row['Number of Series Related Instances']]
     # display the Dataset
     logging.debug('Query Dataset:')
     for s in str(query_ds).split('\n'): logging.debug('    ' + s)
 
     # fetch the data (C-MOVE)
-    dfs, _ = get_data(config, query_ds, to_fetch_params)
-    dfs.reset_index(drop=True, inplace=True)
+    df, datasets = get_data(config, query_ds, to_fetch_fields)
+    df = df.sort_values('AcquisitionTime')
+    df.reset_index(drop=True, inplace=True)
+    #ICD.display(df)
+    #logging.info(datasets)
     
     # if no data is found, skip with error
-    if len(dfs) == 0:
-        logging.error('  ERROR, no data found.')
-        return None
-    # if there is only one row, duplicate it
-    elif len(dfs) == 1:
-        dfs.loc[1, :] = dfs.loc[0, :]
-    # if there are too many rows, skip with error
-    elif len(dfs) > 2:
-        logging.error('  ERROR, too many rows found ({}).'.format(len(df)))
+    if len(df) == 0:
+        logging.error('  ERROR for {}: no data found.'.format(series_string))
         return None
     
+    # if there are too many rows, skip with error
+    elif len(df) > 2:
+        logging.error('  ERROR for {}: too many rows found ({}).'.format(series_string, len(df)))
+        return None
+    
+    # if there is only one row, duplicate it
+    elif len(df) == 1:
+        df.loc[1, :] = df.loc[0, :]
+    
+    # exrtact the start and end times
+    start_time_str = str(df.loc[0, 'AcquisitionTime']).split('.')[0]
+    end_time_str = str(df.loc[1, 'AcquisitionTime']).split('.')[0]
+    
+    # for modality type 'NM', the end time should be calculated
+    if df.loc[0, 'Modality'] == 'NM':
+        
+        # try to get a duration for the current series
+        series_duration = None
+        
+        # try to extract the "Phase Information Sequence"
+        phase_sequence = df.loc[0, '0x00540032']
+        # try to extract the "Rotation Information Sequence"
+        rotation_sequence = df.loc[0, '0x00540052']
+        
+        if str(phase_sequence) != 'nan':
+            # extract the duration of each "phase"
+            phase_durations = []
+            for phase in phase_sequence:
+                frame_dur = int(phase['ActualFrameDuration'].value)
+                n_frames = int(phase['NumberOfFramesInPhase'].value)
+                phase_durations.append(frame_dur * n_frames)
+            # calculate the sum of all durations and convert it to seconds 
+            series_duration = sum(phase_durations)  / 1000
+            
+        if str(rotation_sequence) != 'nan':
+            # extract the duration of each "rotation"
+            rotation_durations = []
+            for rotation in rotation_sequence:
+                frame_dur = int(rotation['ActualFrameDuration'].value)
+                n_frames = int(rotation['NumberOfFramesInRotation'].value)
+                rotation_durations.append(frame_dur * n_frames)
+            # calculate the sum of all durations and convert it to seconds 
+            series_duration = sum(rotation_durations)  / 1000
+        
+        # if no "phase sequence vector" is present, use the actual frame duration
+        elif str(df.loc[0, 'ActualFrameDuration']) != 'nan' and str(df.loc[0, 'NumberOfFrames']) != 'nan':
+            
+            # calculate the duration and convert it to seconds 
+            series_duration = (int(df.loc[0, 'ActualFrameDuration']) * df.loc[0, 'NumberOfFrames']) / 1000
+        
+        # if a duration could *not* be extracted
+        if series_duration is None:
+            logging.error('  ERROR for {}: no series duration found.'.format(series_string))
+        
+        # if a duration could be extracted
+        else:
+            start_time = dt.strptime(start_time_str, '%H%M%S')
+            end_time = start_time + timedelta(seconds=series_duration)
+            end_time_str = end_time.strftime('%H%M%S')
+        
     # create a dictionary to return the gathered information
     info = {
-        'start_time': str(df.loc[0, 'AcquisitionTime']).split('.')[0],
-        'end_time': str(df.loc[1, 'AcquisitionTime']).split('.')[0],
-        'machine': df.loc[0, 'ManufacturerModelName']
+        'start_time': start_time_str,
+        'end_time': end_time_str,
+        'machine': df.loc[0, 'ManufacturerModelName'],
+        'ds': datasets[0]
     }
     
     return info
@@ -291,13 +369,13 @@ def _handle_result(event):
     return 0x0000
 
 
-def get_data(config, query_dataset, return_fields):
+def get_data(config, query_dataset, to_fetch_fields):
     """
     Retrieve the data specified by the query dataset from the PACS using the C-MOVE mode.
     Args:
         config (dict): a dictionary holding all the necessary parameters
         query_dataset (pydicom.dataset.Dataset): a Dataset object holding the filtering parameters
-        return_fields (list): a list of strings specifying the fields to retrieve
+        to_fetch_fields (list): a list of strings specifying the fields to retrieve
     Returns:
         df (DataFrame): a DataFrame containing all retrieved data
         datasets (list): a list of the retrieved datasets
@@ -307,7 +385,7 @@ def get_data(config, query_dataset, return_fields):
     
     # initialize a global DataFrame to store the results
     global df
-    df = DataFrame(columns = return_fields)
+    df = DataFrame(columns = to_fetch_fields)
     # initialize a global list of Datasets to store the results
     global datasets
     datasets = []
