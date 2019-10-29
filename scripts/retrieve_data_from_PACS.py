@@ -60,6 +60,7 @@ def find_studies_for_day(config, study_date, modality):
     query_ds.PatientID = ''
     query_ds.StudyDescription = ''
     query_ds.ReferringPhysicianName = ''
+    query_ds.InstitutionName = ''
 
     # display the query dataset
     logging.debug('Query Dataset:')
@@ -86,7 +87,7 @@ def find_series_for_study(config, study_row):
         df (DataFrame): a DataFrame containing all retrieved series
     """
 
-    logging.info("Retrieving all series from PACS for study {}".format(study_row['Study Instance UID']))
+    logging.info("Retrieving all series for study [{}]: {}".format(study_row.name, study_row['Study Instance UID']))
 
     series_level_filters = ['Study Date', 'Patient ID']
     to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID', 'Issuer of Patient ID']
@@ -110,6 +111,8 @@ def find_series_for_study(config, study_row):
     query_ds.SeriesDescription = ''
     query_ds.SeriesNumber = ''
     query_ds.ProtocolName = ''
+    query_ds.InstitutionName = ''
+    query_ds.RefferingPhysicianName = ''
 
     # display the query dataset
     logging.debug('Query Dataset:')
@@ -119,18 +122,18 @@ def find_series_for_study(config, study_row):
     df_series = find_data(config, query_ds)
 
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
-    series_descr_to_exclude = ['PET Statistics', 'Patient Protocol', 'PET Dose Report',
-                               'Results MM Oncology Reading', 'KEY_IMAGES', 'DefaultSeries',
-                               'Renal_Results']
-    df_series = df_series[~df_series['Series Description'].isin(series_descr_to_exclude)]
-    df_series = df_series[~df_series['Series Description'].str.match('^4DM')]
+    series_descr_patterns_to_exclude = ['.+statistics$', '.+report$', '.+results$', '.+protocol$', '^defaultseries$',
+        '^results.+', '^fusion.+AC$', '^processed images.*', '^4DM.+', '.+SUV5$', '^save_screens$', '^key_images$',
+        '^fused.+', '^mip.*', '^mpr\..*', '^compact.+']
+    for descr_pattern in series_descr_patterns_to_exclude:
+        to_exclude = df_series['Series Description'].str.match(descr_pattern, case=False)
+        if to_exclude.sum() > 0:
+            logging.info('Found {} series to exclude based on their description: "{}"'.format(to_exclude.sum(),
+                '", "'.join(df_series[to_exclude]['Series Description'])))
+        df_series = df_series[~to_exclude]
     
     series_protocol_to_exclude = ['SCREENCAPTURE']
     df_series = df_series[~df_series['Protocol Name'].isin(series_protocol_to_exclude)]
-    
-    # filter out irrelevant series
-    df_series.reset_index(drop=True, inplace=True)
-    df_series = df_series.reset_index(drop=True)
 
     # drop unwanted columns, sort and display
     df_series = df_series.drop(to_drop_columns, axis=1)
@@ -154,17 +157,19 @@ def fetch_info_for_series(config, series_row):
     image_level_filters = ['Patient ID', 'Study Date', 'Series Instance UID', 'Modality']
     
     # fields to fetch from the DICOM header
-    to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime',
-                       'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052', 'Modality']
+    to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime', 'Modality',
+                       'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
     
-    series_string = '{}|{}|{}|PID:{}|{}...{}'.format(*series_row[['Study Date', 'Series Time', 'Modality',
-        'Patient ID']], series_row['Series Instance UID'][:8], series_row['Series Instance UID'][-4:])
+    # create an information string for the logging of the current series
+    UID = series_row['Series Instance UID']
+    series_string = '[{}]: {}|{}|{}|PID:{}|{}...{}'.format(series_row.name, *series_row[
+        ['Study Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
     logging.info('Fetching info for {}'.format(series_string))
     
     # create the query dataset
     query_ds = create_dataset_from_dataframe_row(series_row, 'IMAGE', incl=image_level_filters)
     # add some more filters for the 'PT' modality
-    if series_row['Modality'] == 'PT' or series_row['Modality'] == 'CT':
+    if series_row['Modality'] == 'PT' or series_row['Modality'] == 'CT' or series_row['Number of Series Related Instances'] != '1':
         query_ds.InstanceNumber = ['1', series_row['Number of Series Related Instances']]
     # display the Dataset
     logging.debug('Query Dataset:')
@@ -174,23 +179,25 @@ def fetch_info_for_series(config, series_row):
     df, datasets = get_data(config, query_ds, to_fetch_fields)
     df = df.sort_values('AcquisitionTime')
     df.reset_index(drop=True, inplace=True)
-    #ICD.display(df)
-    #logging.info(datasets)
     
     # if no data is found, skip with error
     if len(df) == 0:
-        logging.error('  ERROR for {}: no data found.'.format(series_string))
-        return None
+        logging.error('  ERROR for {}: no data found'.format(series_string))
+        return
     
     # if there are too many rows, skip with error
     elif len(df) > 2:
-        logging.error('  ERROR for {}: too many rows found ({}).'.format(series_string, len(df)))
-        return None
+        logging.error('  ERROR for {}: too many rows found ({})'.format(series_string, len(df)))
+        return
     
     # if there is only one row, duplicate it
     elif len(df) == 1:
         df.loc[1, :] = df.loc[0, :]
     
+    if 'SECONDARY' in df.loc[0, 'ImageType']:
+        logging.error('  ERROR for {}: secondary image type found: "{}".'.format(series_string, '-'.join(df.loc[0, 'ImageType'])))
+        return
+        
     # exrtact the start and end times
     start_time_str = str(df.loc[0, 'AcquisitionTime']).split('.')[0]
     end_time_str = str(df.loc[1, 'AcquisitionTime']).split('.')[0]
@@ -215,8 +222,9 @@ def fetch_info_for_series(config, series_row):
                 phase_durations.append(frame_dur * n_frames)
             # calculate the sum of all durations and convert it to seconds 
             series_duration = sum(phase_durations)  / 1000
+            logging.debug('  {}: duration is based on phase sequence'.format(series_string))
             
-        if str(rotation_sequence) != 'nan':
+        elif str(rotation_sequence) != 'nan':
             # extract the duration of each "rotation"
             rotation_durations = []
             for rotation in rotation_sequence:
@@ -225,19 +233,25 @@ def fetch_info_for_series(config, series_row):
                 rotation_durations.append(frame_dur * n_frames)
             # calculate the sum of all durations and convert it to seconds 
             series_duration = sum(rotation_durations)  / 1000
+            logging.debug('  {}: duration is based on rotation sequence'.format(series_string))
         
         # if no "phase sequence vector" is present, use the actual frame duration
         elif str(df.loc[0, 'ActualFrameDuration']) != 'nan' and str(df.loc[0, 'NumberOfFrames']) != 'nan':
             
             # calculate the duration and convert it to seconds 
             series_duration = (int(df.loc[0, 'ActualFrameDuration']) * df.loc[0, 'NumberOfFrames']) / 1000
+            logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_string))
         
         # if a duration could *not* be extracted
         if series_duration is None:
-            logging.error('  ERROR for {}: no series duration found.'.format(series_string))
+            logging.error('  ERROR for {}: no series duration found'.format(series_string))
+            return
         
         # if a duration could be extracted
         else:
+            # calculate the duration from the last instance's start time, as there could
+            #    be multiple instances, even for a 'NM' series
+            start_time_str = str(df.loc[1, 'AcquisitionTime']).split('.')[0]
             start_time = dt.strptime(start_time_str, '%H%M%S')
             end_time = start_time + timedelta(seconds=series_duration)
             end_time_str = end_time.strftime('%H%M%S')
@@ -246,32 +260,31 @@ def fetch_info_for_series(config, series_row):
     info = {
         'start_time': start_time_str,
         'end_time': end_time_str,
-        'machine': df.loc[0, 'ManufacturerModelName'],
-        'ds': datasets[0]
+        'machine': df.loc[0, 'ManufacturerModelName']
+        #'ds': datasets[0]
     }
     
     return info
 
 
-
-def prunes_series_by_time_overlap(df_series):
+def prunes_series_by_time_overlap(df):
     """
     Prune the input series DataFrame based on start/end time overlaps.
     Args:
-        df_series (DatFrame): a pandas DataFrame to check for time overlaps
+        df (DatFrame): a pandas DataFrame to check for time overlaps
     Returns:
-        df_series (DatFrame): the pruned pandas DataFrame
+        df (DatFrame): the pruned pandas DataFrame
     """
     
-    logging.info("Pruning series for time overlap")
+    logging.info("Pruning DataFrame for time overlap")
     
     # time format
     FMT = '%H%M%S'
     
     # remove duplicates and sort (rows that have exactly the same start/end times are redundant)
-    df_series.drop_duplicates(['start_time', 'end_time'], inplace=True)
-    df_series = df_series[(~df_series['start_time'].isnull()) & (df_series['start_time'] != 'nan')]
-    df_series = df_series.sort_values('start_time')
+    df = df.drop_duplicates(['start_time', 'end_time'])
+    df = df[(~df['start_time'].isnull()) & (df['start_time'] != 'nan')]
+    df = df.sort_values('start_time')
 
     # prune series based on start/end time overlaps:
     #   as long as some overlap was found, start over
@@ -280,17 +293,16 @@ def prunes_series_by_time_overlap(df_series):
 
         # make sure we only loop if an overlap was found, and reset the index of the DataFrame
         overlap_found = False
-        df_series.reset_index(drop=True, inplace=True)
 
         # go through each row
-        for i_serie in range(1, len(df_series)):
+        for i in range(1, len(df)):
 
             # get the start/end times of the current row
-            curr_start = dt.strptime(df_series.iloc[i_serie]['start_time'], FMT)
-            curr_end = dt.strptime(df_series.iloc[i_serie]['end_time'], FMT)
+            curr_start = dt.strptime(df.iloc[i]['start_time'], FMT)
+            curr_end = dt.strptime(df.iloc[i]['end_time'], FMT)
             # cget the start/end times of the previous row
-            prev_start = dt.strptime(df_series.iloc[i_serie - 1]['start_time'], FMT)
-            prev_end = dt.strptime(df_series.iloc[i_serie - 1]['end_time'], FMT)
+            prev_start = dt.strptime(df.iloc[i - 1]['start_time'], FMT)
+            prev_end = dt.strptime(df.iloc[i - 1]['end_time'], FMT)
 
             # check for an overlap between the current and the previous row
             latest_start = max(curr_start, prev_start)
@@ -301,17 +313,21 @@ def prunes_series_by_time_overlap(df_series):
             # if there is no overlap, then the current time range is fully
             #   overlapping with the previous row's range
             overlap_found = overlap == 0
-            logging.debug('{:2}/{}: checking if {}-{} is included in {}-{}: overlap = {}'.format(i_serie, len(df_series) - 1,
-                curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT), prev_end.strftime(FMT), overlap_found))
+            logging.debug('{:2}/{}: checking if {}-{} is included in {}-{}: overlap = {}'.format(i, len(df) - 1,
+                curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT),
+                prev_end.strftime(FMT), overlap_found))
 
             # if any overlap was found, remove the redundant row and start over
             if overlap_found:
-                df_series.drop(i_serie,inplace=True)
+                logging.info('{:2}/{}: found an overlap: {}-{} is included in {}-{}'.format(i, len(df) - 1,
+                    curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT),
+                    prev_end.strftime(FMT)))
+                df = df.drop(i)
                 break
 
-    return df_series
-   
-   
+    return df
+
+
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
     """
     Creates a pydicom Dataset for querying based on the content of an input DataFrame's row, provided
