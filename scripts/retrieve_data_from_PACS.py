@@ -59,7 +59,6 @@ def find_studies_for_day(config, study_date, modality):
     query_ds.StudyInstanceUID = ''
     query_ds.PatientID = ''
     query_ds.StudyDescription = ''
-    query_ds.ReferringPhysicianName = ''
     query_ds.InstitutionName = ''
 
     # display the query dataset
@@ -71,8 +70,13 @@ def find_studies_for_day(config, study_date, modality):
 
     # drop unwanted columns and display
     to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID',
-                        'Issuer of Patient ID']
-    df_studies = df_studies.drop(to_drop_columns, axis=1)
+                        'Issuer of Patient ID', 'Specific Character Set']
+    try:
+        df_studies = df_studies.drop(to_drop_columns, axis=1)
+    except KeyError:
+        logging.info('Ignoring key error when dropping columns for df_studies')
+        df_studies = df_studies.drop(to_drop_columns[:-1], axis=1)
+        pass
 
     return df_studies
 
@@ -87,10 +91,16 @@ def find_series_for_study(config, study_row):
         df (DataFrame): a DataFrame containing all retrieved series
     """
 
-    logging.info("Retrieving all series for study [{}]: {}".format(study_row.name, study_row['Study Instance UID']))
+    # create an information string for the logging of the current series
+    UID = study_row['Study Instance UID']
+    study_string = '[{:2d}]: {}|{}|IPP:{:7s}|{}...{}'.format(study_row.name, *study_row[
+        ['Study Date', 'Study Time', 'Patient ID']], UID[:8], UID[-4:])
+    logging.info('Fetching series for {}'.format(study_string))
 
+    # define some parameters
     series_level_filters = ['Study Date', 'Patient ID']
-    to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID', 'Issuer of Patient ID']
+    to_drop_columns = ['Study Date', 'Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID',
+        'Issuer of Patient ID']
     sort_columns = ['Series Time', 'Number of Series Related Instances']
 
     logging.debug('DataFrame row:\n' + str(study_row))
@@ -105,14 +115,12 @@ def find_series_for_study(config, study_row):
     # parameters to fetch
     query_ds.SeriesInstanceUID = ''
     query_ds.StudyInstanceUID = ''
+    query_ds.StudyDescription = ''
     query_ds.SeriesTime = ''
-    query_ds.StudyTime  = ''
     query_ds.NumberOfSeriesRelatedInstances = ''
     query_ds.SeriesDescription = ''
-    query_ds.SeriesNumber = ''
     query_ds.ProtocolName = ''
     query_ds.InstitutionName = ''
-    query_ds.RefferingPhysicianName = ''
 
     # display the query dataset
     logging.debug('Query Dataset:')
@@ -120,20 +128,32 @@ def find_series_for_study(config, study_row):
 
     # do the query (C-FIND)
     df_series = find_data(config, query_ds)
+    logging.debug('Found {} series before filtering description'.format(len(df_series)))
 
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     series_descr_patterns_to_exclude = ['.+statistics$', '.+report$', '.+results$', '.+protocol$', '^defaultseries$',
         '^results.+', '^fusion.*', '^processed images.*', '^4DM.+', '.+SUV5$', '^save_screens$', '^key_images$',
-        '^fused.+', '^mip.*', '^mpr\..*', '^compact.+', '^images medrad intego$']
+        '^fused.+', '^mip.*', '^mpr\..*', '^compact.+', '^aw electronic film$', '^images medrad intego$', '.+summary$',
+        '.+ce sub-flt.+']
+    # build the list of rows to exclude
+    indices_to_exclude = []
     for descr_pattern in series_descr_patterns_to_exclude:
-        to_exclude = df_series['Series Description'].str.match(descr_pattern, case=False)
-        if to_exclude.sum() > 0:
-            logging.info('Found {} series to exclude based on their description: "{}"'.format(to_exclude.sum(),
-                '", "'.join(df_series[to_exclude]['Series Description'])))
-        df_series = df_series[~to_exclude]
+        to_exclude_rows = df_series['Series Description'].str.match(descr_pattern, case=False)
+        # gather all the indices
+        indices_to_exclude.append(to_exclude_rows[to_exclude_rows == True].index)
+    # flatten the list
+    indices_to_exclude = [index for indices in indices_to_exclude for index in indices.values]
+    # if there is something to exclude, show a message and drop the rows
+    if len(indices_to_exclude) > 0:
+        logging.debug('Found {} series to exclude based on their description: "{}"'.format(len(indices_to_exclude),
+            '", "'.join(df_series.loc[indices_to_exclude]['Series Description'])))
+        df_series.drop(indices_to_exclude, inplace=True)
+    logging.debug('Found {} series after filtering description'.format(len(df_series)))
     
+    # further filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     series_protocol_to_exclude = ['SCREENCAPTURE']
     df_series = df_series[~df_series['Protocol Name'].isin(series_protocol_to_exclude)]
+    logging.debug('Found {} series after filtering protocol'.format(len(df_series)))
 
     # drop unwanted columns, sort and display
     df_series = df_series.drop(to_drop_columns, axis=1)
@@ -151,10 +171,10 @@ def fetch_info_for_series(config, series_row):
         series_row (Series): a pandas Series (row) specifying the series to query
     Returns:
         info (dict): a dictionary containing all the retrieved information
-    """ 
+    """
     
     # fields to use as filters to get the image
-    image_level_filters = ['Patient ID', 'Study Date', 'Series Instance UID', 'Modality']
+    image_level_filters = ['Patient ID', 'Series Date', 'Series Instance UID', 'Modality']
     
     # fields to fetch from the DICOM header
     to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime', 'Modality',
@@ -162,15 +182,20 @@ def fetch_info_for_series(config, series_row):
     
     # create an information string for the logging of the current series
     UID = series_row['Series Instance UID']
-    series_string = '[{}]: {}|{}|{}|PID:{}|{}...{}'.format(series_row.name, *series_row[
-        ['Study Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
+    series_string = '[{:3d}]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(series_row.name, *series_row[
+        ['Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
     logging.info('Fetching info for {}'.format(series_string))
-    
+        
     # create the query dataset
     query_ds = create_dataset_from_dataframe_row(series_row, 'IMAGE', incl=image_level_filters)
     # add some more filters for the 'PT' modality
-    if series_row['Modality'] == 'PT' or series_row['Modality'] == 'CT' or series_row['Number of Series Related Instances'] != '1':
-        query_ds.InstanceNumber = ['1', series_row['Number of Series Related Instances']]
+    if series_row['Number of Series Related Instances'] != '1':
+        image_number_filter = ['1', series_row['Number of Series Related Instances']]
+    else:
+        image_number_filter = '1'
+    # add the instance number filters for the 'PT' & 'CT' modalities
+    if series_row['Modality'] == 'PT' or series_row['Modality'] == 'CT':
+        query_ds.InstanceNumber = image_number_filter
     # display the Dataset
     logging.debug('Query Dataset:')
     for s in str(query_ds).split('\n'): logging.debug('    ' + s)
@@ -286,7 +311,7 @@ def fetch_info_for_series(config, series_row):
             start_time = dt.strptime(start_time_str, '%H%M%S')
             end_time = start_time + timedelta(seconds=series_duration)
             end_time_str = end_time.strftime('%H%M%S')
-        
+    
     # create a dictionary to return the gathered information
     info = {
         'start_time': start_time_str,
@@ -298,9 +323,9 @@ def fetch_info_for_series(config, series_row):
     return info
 
 
-def prunes_series_by_time_overlap(df):
+def prune_by_time_overlap(df):
     """
-    Prune the input series DataFrame based on start/end time overlaps.
+    Prune the input DataFrame based on start/end time overlaps.
     Args:
         df (DatFrame): a pandas DataFrame to check for time overlaps
     Returns:
@@ -451,26 +476,32 @@ def get_data(config, query_dataset, to_fetch_fields):
     logging.debug("Connecting to PACS")
     # Associate with peer AE at IP 127.0.0.1 and port 11112
     assoc = ae.associate(config['PACS']['host'], config['PACS'].getint('port'),
-                         ae_title=config['PACS']['ae_called_title'])  
-    # if the connection is successfully established
-    if assoc.is_established:
-        logging.debug("Association established")
-        # use the C-MOVE service to send the identifier
-        responses = assoc.send_c_move(query_dataset, config['PACS']['ae_title'],
-                                      PatientRootQueryRetrieveInformationModelMove)
-        logging.debug("Response(s) received")
-        i_response = 0
-        for (status, identifier) in responses:
-            if status:
-                logging.debug('C-MOVE query status: 0x{0:04x}'.format(status.Status))
-            else:
-                logging.error('Connection timed out, was aborted or received invalid response')
-        # release the association
+                         ae_title=config['PACS']['ae_called_title']) 
+    try: 
+        # if the connection is successfully established
+        if assoc.is_established:
+            logging.debug("Association established")
+            # use the C-MOVE service to send the identifier
+            responses = assoc.send_c_move(query_dataset, config['PACS']['ae_title'],
+                                          PatientRootQueryRetrieveInformationModelMove)
+            logging.debug("Response(s) received")
+            i_response = 0
+            for (status, identifier) in responses:
+                if status:
+                    logging.debug('C-MOVE query status: 0x{0:04x}'.format(status.Status))
+                else:
+                    logging.error('Connection timed out, was aborted or received invalid response')
+                logging.debug('Status: {}, identifier: {}'.format(str(status), str(identifier)))
+        else:
+            logging.error('Association rejected, aborted or never connected')
+    except:
+        logging.error('Error during fetching of data (C-MOVE)')
+        raise
+    finally:
+        # release the association and stop our Storage SCP
         assoc.release()
-    else:
-        logging.error('Association rejected, aborted or never connected')
-    # stop our Storage SCP
-    scp.shutdown() 
+        scp.shutdown()
+        logging.debug("Connection closed")
     return df, datasets
 
     
@@ -495,30 +526,34 @@ def find_data(config, query_dataset):
     logging.debug("Connecting to PACS")
     assoc = ae.associate(config['PACS']['host'], config['PACS'].getint('port'),
                          ae_title=config['PACS']['ae_called_title'])
-    # if the connection is successfully established
-    if assoc.is_established:
-        logging.debug("Association established")
-        # use the C-FIND service to send the identifier
-        responses = assoc.send_c_find(query_dataset,
-                                      PatientRootQueryRetrieveInformationModelFind)
-        logging.debug("Response(s) received")
-        i_response = 0
-        for (status, identifier) in responses:
-            if status:
-                logging.debug('C-FIND query status: 0x{0:04x}'.format(status.Status))
-                # if the status is 'Pending' then identifier is the C-FIND response
-                if status.Status in (0xFF00, 0xFF01):
-                    # copy all fields
-                    for data_element in identifier:
-                        df.loc[i_response, data_element.name] = str(data_element.value)
-                    i_response += 1
-            else:
-                logging.error('Connection timed out, was aborted or received invalid response')
-
-         # release the association
+    try:
+        # if the connection is successfully established
+        if assoc.is_established:
+            logging.debug("Association established")
+            # use the C-FIND service to send the identifier
+            responses = assoc.send_c_find(query_dataset,
+                                          PatientRootQueryRetrieveInformationModelFind)
+            logging.debug("Response(s) received")
+            i_response = 0
+            for (status, identifier) in responses:
+                if status:
+                    logging.debug('C-FIND query status: 0x{0:04x}'.format(status.Status))
+                    # if the status is 'Pending' then identifier is the C-FIND response
+                    if status.Status in (0xFF00, 0xFF01):
+                        # copy all fields
+                        for data_element in identifier:
+                            df.loc[i_response, data_element.name] = str(data_element.value)
+                        i_response += 1
+                else:
+                    logging.error('Connection timed out, was aborted or received invalid response')
+        else:
+            logging.error('Association rejected, aborted or never connected')
+    except:
+        logging.error('Error during finding of data (C-FIND)')
+        raise
+    finally:
+        # release the association
         assoc.release()
         logging.debug("Connection closed")
-    else:
-        logging.error('Association rejected, aborted or never connected')
         
     return df
