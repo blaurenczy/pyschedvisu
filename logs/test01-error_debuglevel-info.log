@@ -1,0 +1,24 @@
+2019-11-11 12:07:55,969|INFO| Fetching info for [ 15]: 20191101|082322|NM|IPP:2952593|1.2.840....1492
+2019-11-11 12:07:55,971|INFO| Query Dataset:
+2019-11-11 12:07:55,972|INFO|     (0008, 0021) Series Date                         DA: '20191101'
+2019-11-11 12:07:55,973|INFO|     (0008, 0052) Query/Retrieve Level                CS: 'IMAGE'
+2019-11-11 12:07:55,974|INFO|     (0008, 0060) Modality                            CS: 'NM'
+2019-11-11 12:07:55,975|INFO|     (0010, 0020) Patient ID                          LO: '2952593'
+2019-11-11 12:07:55,976|INFO|     (0020, 000e) Series Instance UID                 UI: 1.2.840.113619.2.280.2.1.1112019082141011.77731492
+2019-11-11 12:07:55,988|INFO| Requesting Association
+2019-11-11 12:07:56,040|INFO| Association Accepted
+2019-11-11 12:07:56,042|INFO| Sending Move Request: MsgID 1
+2019-11-11 12:07:56,042|INFO| 
+2019-11-11 12:07:56,043|INFO| # Identifier DICOM Dataset
+2019-11-11 12:07:56,044|INFO| (0008, 0021) Series Date                         DA: '20191101'
+2019-11-11 12:07:56,045|INFO| (0008, 0052) Query/Retrieve Level                CS: 'IMAGE'
+2019-11-11 12:07:56,045|INFO| (0008, 0060) Modality                            CS: 'NM'
+2019-11-11 12:07:56,046|INFO| (0010, 0020) Patient ID                          LO: '2952593'
+2019-11-11 12:07:56,047|INFO| (0020, 000e) Series Instance UID                 UI: 1.2.840.113619.2.280.2.1.1112019082141011.77731492
+2019-11-11 12:07:56,047|INFO| 
+2019-11-11 12:07:57,597|INFO| Accepting Association
+2019-11-11 12:07:57,701|INFO| Association Aborted
+2019-11-11 12:07:57,709|INFO| Move SCP Result: 0xc336 (Failure)
+2019-11-11 12:07:57,710|INFO| Sub-Operations Remaining: 0, Completed: 0, Failed: 10000, Warning: 0
+2019-11-11 12:07:57,711|INFO| Releasing Association
+2019-11-11 12:07:58,083|ERROR|   ERROR for [ 15]: 20191101|082322|NM|IPP:2952593|1.2.840....1492: no data found. "Series Description" field = "STATIQUE ANT"
