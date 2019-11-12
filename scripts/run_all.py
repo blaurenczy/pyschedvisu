@@ -19,6 +19,7 @@ def run_all():
     logging.info("Reading configuration")
     # read in the configuration file
     config = ConfigParser()
+    config.optionxform = str
     config.read('config.ini')
 
     # create some test variables
