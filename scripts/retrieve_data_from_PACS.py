@@ -98,7 +98,7 @@ def find_series_for_study(config, study_row):
     logging.info('Fetching series for {}'.format(study_string))
 
     # define some parameters
-    series_level_filters = ['Study Date', 'Patient ID']
+    series_level_filters = ['Study Date', 'Patient ID', 'Study Instance UID']
     to_drop_columns = ['Study Date', 'Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID',
         'Issuer of Patient ID']
     sort_columns = ['Series Time', 'Number of Series Related Instances']
@@ -114,7 +114,7 @@ def find_series_for_study(config, study_row):
 
     # parameters to fetch
     query_ds.SeriesInstanceUID = ''
-    query_ds.StudyInstanceUID = ''
+    #query_ds.StudyInstanceUID = ''
     query_ds.StudyDescription = ''
     query_ds.SeriesTime = ''
     query_ds.NumberOfSeriesRelatedInstances = ''
@@ -129,12 +129,15 @@ def find_series_for_study(config, study_row):
     # do the query (C-FIND)
     df_series = find_data(config, query_ds)
     logging.debug('Found {} series before filtering description'.format(len(df_series)))
+    
+    # abort if no result
+    if len(df_series) == 0: return None
 
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     series_descr_patterns_to_exclude = ['.+statistics$', '.+report$', '.+results$', '.+protocol$', '^defaultseries$',
         '^results.+', '^fusion.*', '^processed images.*', '^4DM.+', '.+SUV5$', '^save_screens$', '^key_images$',
         '^fused.+', '^mip.*', '^mpr\..*', '^compact.+', '^aw electronic film$', '^images medrad intego$', '.+summary$',
-        '.+ce sub-flt.+']
+        '.+ce sub-flt.+', '^(cor|coro|sag) (std|os)$']
     # build the list of rows to exclude
     indices_to_exclude = []
     for descr_pattern in series_descr_patterns_to_exclude:
@@ -149,11 +152,15 @@ def find_series_for_study(config, study_row):
             '", "'.join(df_series.loc[indices_to_exclude]['Series Description'])))
         df_series.drop(indices_to_exclude, inplace=True)
     logging.debug('Found {} series after filtering description'.format(len(df_series)))
+    # abort if no more result (all filtered)
+    if len(df_series) == 0: return None
     
     # further filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     series_protocol_to_exclude = ['SCREENCAPTURE']
     df_series = df_series[~df_series['Protocol Name'].isin(series_protocol_to_exclude)]
     logging.debug('Found {} series after filtering protocol'.format(len(df_series)))
+    # abort if no more result (all filtered)
+    if len(df_series) == 0: return None
 
     # drop unwanted columns, sort and display
     df_series = df_series.drop(to_drop_columns, axis=1)
@@ -182,8 +189,12 @@ def fetch_info_for_series(config, series_row):
     
     # create an information string for the logging of the current series
     UID = series_row['Series Instance UID']
-    series_string = '[{:3d}]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(series_row.name, *series_row[
-        ['Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
+    if 'i_try' in series_row:
+        series_string = '[{:3d}|{:2d}]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(series_row.name, *series_row[
+            ['i_try', 'Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
+    else:
+        series_string = '[{:3d}]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(series_row.name, *series_row[
+            ['Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
     logging.info('Fetching info for {}'.format(series_string))
         
     # create the query dataset
@@ -210,7 +221,7 @@ def fetch_info_for_series(config, series_row):
     
     # if no data is found, skip with error
     if len(df) == 0:
-        logging.error('  ERROR for {}: no data found. "Series Description" field = "{}"'
+        logging.debug('  ERROR for {}: no data found. "Series Description" field = "{}"'
                       .format(series_string, series_row['Series Description']))
         return
     
