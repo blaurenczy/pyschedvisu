@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
 import logging
+import time
 
 from datetime import datetime as dt
 from datetime import timedelta
 
+import pandas as pd
 from pandas import DataFrame
 
 from IPython.core import display as ICD
@@ -68,17 +70,68 @@ def find_studies_for_day(config, study_date, modality):
     # do the query (C-FIND)
     df_studies = find_data(config, query_ds)
 
-    # drop unwanted columns and display
-    to_drop_columns = ['Query/Retrieve Level', 'Retrieve AE Title', 'Type of Patient ID',
-                        'Issuer of Patient ID', 'Specific Character Set']
-    try:
-        df_studies = df_studies.drop(to_drop_columns, axis=1)
-    except KeyError:
-        logging.info('Ignoring key error when dropping columns for df_studies')
-        df_studies = df_studies.drop(to_drop_columns[:-1], axis=1)
-        pass
+    # drop unwanted columns
+    df_studies = df_studies.drop(config['extract']['to_drop_columns_studies'].split('\n'), axis=1, errors='ignore')
+
+    # filter out irrelevant studies
+    df_studies = df_studies[df_studies['Patient ID'].str.match('^\d+$')]
+    df_studies = df_studies[~df_studies['Study Description'].isin(['EXTRINSEQUE'])]
+    df_studies = df_studies.reset_index(drop=True)
 
     return df_studies
+
+
+def find_series_for_studies(config, df_studies):
+    """
+    Finds all series for each study of the input DataFrame from the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        df_studies (DataFrame): a pandas DataFrame specifying the studies to query
+    Returns:
+        df (DataFrame): a DataFrame containing all retrieved series for all studies
+    """
+
+    # this DataFrame stores the list of all the series found for all studies
+    df_series = pd.DataFrame()
+
+    # go through each study
+    logging.info('Going through {} studie(s)'.format(len(df_studies)))
+    for i_study in range(len(df_studies)):
+        
+        # find all series of the current study
+        df_series_for_study = find_series_for_study(config, df_studies.iloc[i_study])
+        if df_series_for_study is None:
+            logging.warning('Skipping study because there are no usable Series associated with it')
+            continue
+
+        # get the institution name(s) for this study based on the found series
+        inst_names = list(set([inst_name.replace('  ', ' ') for inst_name in df_series_for_study.loc[:, 'Institution Name']]))
+        # if we found multiple institution names
+        if len(inst_names) > 1:
+            logging.warning('Multiple institution names for study: "{}"'.format(' / '.join(inst_names)))
+            inst_name = 'mixed'
+        # if we found a single institution name
+        else:
+            inst_name = inst_names[0]
+        # set the institution name for this study
+        df_studies.loc[i_study, 'Institution Name'] = inst_name
+
+        # filter for the institution name
+        accepted_inst_names = config['extract']['accepted_institution_names'].split('\n')
+        # if this instiution name is not in the list of accepted institution names, skip it
+        if inst_name.lower().replace(' ', '') not in accepted_inst_names:
+            logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
+            continue
+
+        # append the new series to the main series DataFrame
+        df_series = df_series.append(df_series_for_study, sort=False, ignore_index=True)
+
+    # add some required columns
+    df_series['start_time'] = None
+    df_series['end_time'] = None
+    df_series['machine'] = None
+
+    return df_series
 
 
 def find_series_for_study(config, study_row):
@@ -88,7 +141,7 @@ def find_series_for_study(config, study_row):
         config (dict): a dictionary holding all the necessary parameters
         study_row (Series): a pandas Series (row) specifying the study to query
     Returns:
-        df (DataFrame): a DataFrame containing all retrieved series
+        df (DataFrame): a DataFrame containing all retrieved series for the queried study
     """
 
     # create an information string for the logging of the current series
@@ -103,8 +156,6 @@ def find_series_for_study(config, study_row):
         'Issuer of Patient ID']
     sort_columns = ['Series Time', 'Number of Series Related Instances']
 
-    logging.debug('DataFrame row:\n' + str(study_row))
-
     # create the query dataset
     query_ds = create_dataset_from_dataframe_row(study_row, 'SERIES', incl=series_level_filters)
 
@@ -114,7 +165,6 @@ def find_series_for_study(config, study_row):
 
     # parameters to fetch
     query_ds.SeriesInstanceUID = ''
-    #query_ds.StudyInstanceUID = ''
     query_ds.StudyDescription = ''
     query_ds.SeriesTime = ''
     query_ds.NumberOfSeriesRelatedInstances = ''
@@ -129,18 +179,13 @@ def find_series_for_study(config, study_row):
     # do the query (C-FIND)
     df_series = find_data(config, query_ds)
     logging.debug('Found {} series before filtering description'.format(len(df_series)))
-    
     # abort if no result
     if len(df_series) == 0: return None
 
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
-    series_descr_patterns_to_exclude = ['.+statistics$', '.+report$', '.+results$', '.+protocol$', '^defaultseries$',
-        '^results.+', '^fusion.*', '^processed images.*', '^4DM.+', '.+SUV5$', '^save_screens$', '^key_images$',
-        '^fused.+', '^mip.*', '^mpr\..*', '^compact.+', '^aw electronic film$', '^images medrad intego$', '.+summary$',
-        '.+ce sub-flt.+', '^(cor|coro|sag) (std|os)$']
-    # build the list of rows to exclude
     indices_to_exclude = []
-    for descr_pattern in series_descr_patterns_to_exclude:
+    # go through each pattern and build the list of rows to exclude
+    for descr_pattern in config['extract']['series_descr_patterns_to_exclude'].split('\n'):
         to_exclude_rows = df_series['Series Description'].str.match(descr_pattern, case=False)
         # gather all the indices
         indices_to_exclude.append(to_exclude_rows[to_exclude_rows == True].index)
@@ -154,49 +199,150 @@ def find_series_for_study(config, study_row):
     logging.debug('Found {} series after filtering description'.format(len(df_series)))
     # abort if no more result (all filtered)
     if len(df_series) == 0: return None
-    
+
     # further filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
-    series_protocol_to_exclude = ['SCREENCAPTURE']
-    df_series = df_series[~df_series['Protocol Name'].isin(series_protocol_to_exclude)]
-    logging.debug('Found {} series after filtering protocol'.format(len(df_series)))
+    df_series = df_series[~df_series['Protocol Name'].isin(config['extract']['series_protocols_to_exclude'].split('\n'))]
+    logging.debug('Found {} series after filtering protocol names'.format(len(df_series)))
     # abort if no more result (all filtered)
     if len(df_series) == 0: return None
 
     # drop unwanted columns, sort and display
-    df_series = df_series.drop(to_drop_columns, axis=1)
+    df_series = df_series.drop(config['extract']['to_drop_columns_series'].split('\n'), axis=1, errors='ignore')
     df_series.sort_values(sort_columns, inplace=True)
     df_series.reset_index(drop=True, inplace=True)
 
     return df_series
 
 
-def fetch_info_for_series(config, series_row):
+def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
     """
-    Get some information (start & end time, machine, etc.) for a series based on the images found in the PACS.
+    Get some information (start & end time, machine, etc.) for each series based on the images found in the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        df_series (DataFrame): a pandas DataFrame holding the series
+        i_try_field_name (str): name of the field where to store the "number of tries" information
+    Returns:
+        df_series (DataFrame): a pandas DataFrame holding the series
+    """
+
+    logging.info('Going through {} series'.format(len(df_series)))
+    
+    # go through each series severall time (overall "pass")
+    for i_overall_try in range(int(config['extract']['n_max_overall_try'])):
+    
+        # change the name of the field storing the number of tries
+        i_try_field_name = 'i_try_{}'.format(i_overall_try)
+        df_series[i_try_field_name] = None
+        
+        # go through each series
+        for i_series in df_series.index:
+            
+            # skip series where information already exists
+            if df_series.loc[i_series, 'start_time'] is not None: continue
+            
+            row_info, i_try = None, 0
+            while row_info is None:
+                i_try += 1
+                df_series.loc[i_series, i_try_field_name] = i_try
+                # find information about this series by fetching some images
+                row_info = fetch_info_for_single_series(config, df_series.loc[i_series])
+                # if there is no data and we reached our maximum number of tries
+                if row_info is None and i_try >= int(config['extract']['n_max_try']):
+                    # mark row as a failed trial and abort
+                    df_series.loc[i_series, i_try_field_name] = -1
+                    break
+                # if there is no data but we did not reach (yet) our maximum number of tries
+                elif row_info is None:
+                    # delay the next retry
+                    time.sleep(float(config['extract']['inter_try_sleep_time']))
+                    
+            # abort processing for this series no data
+            if row_info is None:
+                logging.error('ERROR with series {}: no data found'.format(df_series.loc[i_series, 'Series Instance UID']))
+                continue
+
+            # copy the relevant parameters into the main DataFrame
+            df_series.loc[i_series, 'start_time'] = row_info['start_time']
+            df_series.loc[i_series, 'end_time'] = row_info['end_time']
+            df_series.loc[i_series, 'machine'] = row_info['machine']
+
+    return df_series
+
+def show_stats_for_fetching_series_info(df_series):
+    """
+    Show some statistics on the fetching of information for seriess.
+    Args:
+        df_series (DataFrame): a pandas DataFrame specifying the series to query
+    Returns:
+        None
+    """
+
+    n = len(df_series)
+        
+    # if we have the information about the first round
+    if 'i_try_0' in df_series.columns:
+        # count successfull and failed trials on the first round
+        i_try_0 = df_series['i_try_0']
+        failures = i_try_0[i_try_0 == -1]
+        n_fail = len(failures)
+        successes = i_try_0[i_try_0 != -1]
+        n_succ = len(successes)
+        first = successes[successes == 1]
+        multi = successes[successes > 1]
+        # print out the stats for the first round
+        logging.info('Success    (1):     {:03d} / {:03d} ({:.1f}%)'.format(n_succ, n, 100 * n_succ / n))
+        logging.info('Failures    (1):    {:03d} / {:03d} ({:.1f}%)'.format(n_fail, n, 100 * n_fail / n))
+        logging.info('First tries (1): {:03d} / {:03d} ({:.1f}%)'.format(len(first), n_succ, 100 * len(first) / n_succ))
+        logging.info('Multi-tries (1): {:03d} / {:03d} ({:.1f}%)'.format(len(multi), n_succ, 100 * len(multi) / n_succ))
+        logging.info('Mean ± SD multi-tries (1): {:.2f} ± {:.2f}'.format(multi.mean(), multi.std()))
+
+    # if we have the information about the second round
+    if 'i_try_1' in df_series.columns:
+        # count successfull and failed trials on the second round
+        i_try_1 = df_series['i_try_1']
+        recoveries = i_try_1[(i_try_0 == -1) & (i_try_1 != -1)]
+        n_recov = len(recoveries)
+        total_failures = i_try_1[(i_try_0 == -1) & (i_try_1 == -1)]
+        recov_first = recoveries[recoveries == 1]
+        recov_multi = recoveries[recoveries > 1]
+        # print out the stats for the second round
+        logging.info('Recoveries  (2):  {:03d} / {:03d} ({:.1f}%)'.format(n_recov, n_fail, 100 * n_recov / n_fail))
+        logging.info('Total fails (2):  {:03d} / {:03d} ({:.1f}%)'.format(len(total_failures), n_fail, 100 * len(total_failures) / n_fail))
+        logging.info('First tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_first), n_recov, 100 * len(recov_first) / n_recov))
+        logging.info('Multi-tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_multi), n_recov, 100 * len(recov_multi) / n_recov))
+        logging.info('Mean ± SD multi-tries (2): {:.2f} ± {:.2f}'.format(recov_multi.mean(), recov_multi.std()))
+
+
+def fetch_info_for_single_series(config, series_row):
+    """
+    Get some information (start & end time, machine, etc.) for a single series based on the images found in the PACS.
     Args:
         config (dict): a dictionary holding all the necessary parameters
         series_row (Series): a pandas Series (row) specifying the series to query
     Returns:
         info (dict): a dictionary containing all the retrieved information
     """
-    
+
     # fields to use as filters to get the image
     image_level_filters = ['Patient ID', 'Series Date', 'Series Instance UID', 'Modality']
-    
+
     # fields to fetch from the DICOM header
     to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime', 'Modality',
                        'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
-    
+
     # create an information string for the logging of the current series
     UID = series_row['Series Instance UID']
-    if 'i_try' in series_row:
-        series_string = '[{:3d}|{:2d}]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(series_row.name, *series_row[
-            ['i_try', 'Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
+    series_string = '[XXX]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(*series_row[
+        ['Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
+    if 'i_try_0' in series_row and 'i_try_1' in series_row:
+        series_string = series_string.replace('XXX', '{:3d}|{:2d}|{:2d}'.format(series_row.name, *series_row[['i_try_0', 'i_try_1']]))
+    if 'i_try_0' in series_row:
+        series_string = series_string.replace('XXX', '{:3d}|{:2d}'.format(series_row.name, series_row.i_try_0))
     else:
-        series_string = '[{:3d}]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(series_row.name, *series_row[
-            ['Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
+        series_string = series_string.replace('XXX', '{:3d}'.format(series_row.name))
+    # actually do the logging :-) This part is probably overly complicated, but it looks nice on the logging output!
     logging.info('Fetching info for {}'.format(series_string))
-        
+
     # create the query dataset
     query_ds = create_dataset_from_dataframe_row(series_row, 'IMAGE', incl=image_level_filters)
     # add some more filters for the 'PT' modality
@@ -213,30 +359,30 @@ def fetch_info_for_series(config, series_row):
 
     # fetch the data (C-MOVE)
     df, datasets = get_data(config, query_ds, to_fetch_fields)
-    
+
     # sort the data and reset the index. Warning: this does not guarantee that the first index (0) has
     #    the highest InstanceNumber. Data is sorted according to the AcquisitionTime
     df = df.sort_values('AcquisitionTime')
     df.reset_index(drop=True, inplace=True)
-    
+
     # if no data is found, skip with error
     if len(df) == 0:
         logging.debug('  ERROR for {}: no data found. "Series Description" field = "{}"'
                       .format(series_string, series_row['Series Description']))
         return
-    
+
     # if there are too many rows, skip with error
     elif len(df) > 2:
         logging.error('  ERROR for {}: too many rows found ({})'.format(series_string, len(df)))
         return
-    
+
     # if there is only one row, duplicate it
     elif len(df) == 1:
         df.loc[1, :] = df.loc[0, :]
-    
+
     # if the image type is "SECONDARY", this means that we are not dealing with a raw image but with a processed image
     if 'SECONDARY' in df.loc[0, 'ImageType']:
-        
+
         # try to rescue this series by looking at the before-last image
         if int(series_row['Number of Series Related Instances']) > 1:
             logging.warning('  WARNING for {}: secondary image type found. Trying to recover'.format(series_string))
@@ -258,28 +404,28 @@ def fetch_info_for_series(config, series_row):
             df.loc[0, :] = df_before_last.reset_index(drop=True).loc[0, :]
             logging.info('  INFO for {}: secondary image type recovered: "{}". '
                           .format(series_string, '-'.join(df.loc[0, 'ImageType'])))
-            
+
         # if this series does not have the option of going for the before-last InstanceNumber, abort
         else:
             logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" field = "{}"'
                       .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
             return
-        
+
     # exrtact the start and end times
     start_time_str = str(df.loc[0, 'AcquisitionTime']).split('.')[0]
     end_time_str = str(df.loc[1, 'AcquisitionTime']).split('.')[0]
-    
+
     # for modality type 'NM', the end time should be calculated
     if df.loc[0, 'Modality'] == 'NM':
-        
+
         # try to get a duration for the current series
         series_duration = None
-        
+
         # try to extract the "Phase Information Sequence"
         phase_sequence = df.loc[0, '0x00540032']
         # try to extract the "Rotation Information Sequence"
         rotation_sequence = df.loc[0, '0x00540052']
-        
+
         if str(phase_sequence) != 'nan':
             # extract the duration of each "phase"
             phase_durations = []
@@ -290,7 +436,7 @@ def fetch_info_for_series(config, series_row):
             # calculate the sum of all durations and convert it to seconds 
             series_duration = sum(phase_durations)  / 1000
             logging.debug('  {}: duration is based on phase sequence'.format(series_string))
-            
+
         elif str(rotation_sequence) != 'nan':
             # extract the duration of each "rotation"
             rotation_durations = []
@@ -301,19 +447,18 @@ def fetch_info_for_series(config, series_row):
             # calculate the sum of all durations and convert it to seconds 
             series_duration = sum(rotation_durations)  / 1000
             logging.debug('  {}: duration is based on rotation sequence'.format(series_string))
-        
+
         # if no "phase sequence vector" is present, use the actual frame duration
         elif str(df.loc[0, 'ActualFrameDuration']) != 'nan' and str(df.loc[0, 'NumberOfFrames']) != 'nan':
-            
             # calculate the duration and convert it to seconds 
             series_duration = (int(df.loc[0, 'ActualFrameDuration']) * df.loc[0, 'NumberOfFrames']) / 1000
             logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_string))
-        
+
         # if a duration could *not* be extracted
         if series_duration is None:
             logging.error('  ERROR for {}: no series duration found'.format(series_string))
             return
-        
+
         # if a duration could be extracted
         else:
             # calculate the duration from the last instance's start time, as there could
@@ -322,15 +467,14 @@ def fetch_info_for_series(config, series_row):
             start_time = dt.strptime(start_time_str, '%H%M%S')
             end_time = start_time + timedelta(seconds=series_duration)
             end_time_str = end_time.strftime('%H%M%S')
-    
+
     # create a dictionary to return the gathered information
     info = {
         'start_time': start_time_str,
         'end_time': end_time_str,
         'machine': df.loc[0, 'ManufacturerModelName']
-        #'ds': datasets[0]
     }
-    
+
     return info
 
 
@@ -338,16 +482,16 @@ def prune_by_time_overlap(df):
     """
     Prune the input DataFrame based on start/end time overlaps.
     Args:
-        df (DatFrame): a pandas DataFrame to check for time overlaps
+        df (DataFrame): a pandas DataFrame to check for time overlaps
     Returns:
-        df (DatFrame): the pruned pandas DataFrame
+        df (DataFrame): the pruned pandas DataFrame
     """
-    
+
     logging.info("Pruning DataFrame for time overlap")
-    
+
     # time format
     FMT = '%H%M%S'
-    
+
     # remove duplicates and sort (rows that have exactly the same start/end times are redundant)
     df = df.drop_duplicates(['start_time', 'end_time'])
     df = df[(~df['start_time'].isnull()) & (df['start_time'] != 'nan')]
@@ -409,7 +553,7 @@ def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
     """
 
     logging.debug("Creating dataset from row")
-    
+
     # by default, include all columns
     if len(incl) == 0:
         incl = list(df_row.axes[0])
@@ -465,7 +609,7 @@ def get_data(config, query_dataset, to_fetch_fields):
     """
 
     logging.debug("Getting data")
-    
+
     # initialize a global DataFrame to store the results
     global df
     df = DataFrame(columns = to_fetch_fields)
@@ -515,7 +659,7 @@ def get_data(config, query_dataset, to_fetch_fields):
         logging.debug("Connection closed")
     return df, datasets
 
-    
+
 def find_data(config, query_dataset):
     """
     Retrieve the data specified by the query dataset from the PACS using the C-FIND mode.
@@ -525,9 +669,9 @@ def find_data(config, query_dataset):
     Returns:
         df (DataFrame): a DataFrame containing all retrieved data
     """
-    
+
     logging.debug("Finding data")
-    
+
     # initialize a DataFrame to store the results
     df = DataFrame()
     # create the AE with the "find" information model
