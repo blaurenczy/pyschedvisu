@@ -2,14 +2,13 @@
 
 import logging
 import time
+import os
 
 from datetime import datetime as dt
 from datetime import timedelta
 
 import pandas as pd
 from pandas import DataFrame
-
-from IPython.core import display as ICD
 
 from pydicom.dataset import Dataset
 from pydicom.tag import Tag
@@ -21,18 +20,72 @@ from pynetdicom.sop_class import (
 )
 
 
-def retrieve_data_from_PACS(config):
+def retrieve_and_save_data_from_PACS(config):
     """
-    Retrieve the relevant (meta-)data from the PACS.
+    Retrieve and save the relevant series from the PACS for all days specified by the config.
     Args:
         config (dict): a dictionary holding all the necessary parameters
     Returns:
         None
     """
-
+    
     logging.info("Retrieving data from PACS")
+    
+    # set debug level of pynetdicom based on the configuration file's content
+    logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'])
 
-    return
+    # get the date range from the config
+    start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
+    end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
+    days_range = pd.date_range(start_date, end_date)
+    
+    # go through the date range day by day
+    for day in days_range:
+        logging.info('Processing {}'.format(day.strftime("%Y%m%d")))
+        # fetch (or load) the data for the current day
+        df_series_single_day = retrieve_and_save_single_day_data_from_PACS(config, day)
+
+
+def retrieve_and_save_single_day_data_from_PACS(config, day):
+    """
+    Retrieve and save the relevant series from the PACS for a single day.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        day (datetime): a datetime object of the day to process
+    Returns:
+        None
+    """
+
+    # create the path where the input day's data would be stored
+    day_str = day.strftime('%Y%m%d')
+    day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
+    day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y-%m-%d')))
+    
+    # check if the current date has already been retrieved and saved
+    if os.path.isfile(day_save_file_path):
+        logging.info('Skipping   {}: save file found at "{}", nothing to do'.format(day_str, day_save_file_path))
+    
+    # if the current date has not already been retrieved and saved
+    else:
+        logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
+        # find all 'PT' and 'NM' studies for a day (specified as YYYYMMDD for the PACS)
+        df_studies = find_studies_for_day(config, day.strftime('%Y%m%d'), ['PT', 'NM'])
+        # abort if no studies provided as input
+        if df_studies is None or len(df_studies) == 0:
+            logging.warning('Warning at {}: no studies found'.format(day_str))
+            return
+        # get all series for the found studies
+        df_series = find_series_for_studies(config, df_studies)
+        # go through each series and find information about them
+        df_series = fetch_info_for_series(config, df_series)
+        # get some statistics on the success / failure rates of fetching info for SERIES
+        show_stats_for_fetching_series_info(df_series)
+        # exclude series where no information could be gathered
+        df_series = df_series[~df_series.end_time.isnull()]
+        # make sure the save directory exists
+        if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
+        # save the series
+        df_series.to_pickle(day_save_file_path)
 
 
 def find_studies_for_day(config, study_date, modality):
@@ -46,7 +99,7 @@ def find_studies_for_day(config, study_date, modality):
         df (DataFrame): a DataFrame containing all retrieved studies
     """
 
-    logging.info("Retrieving all studies from PACS for day {}".format(study_date))
+    logging.info('Processing {}: retrieving all studies from PACS'.format(study_date))
 
     # create the query dataset
     query_ds = Dataset()
@@ -69,14 +122,19 @@ def find_studies_for_day(config, study_date, modality):
 
     # do the query (C-FIND)
     df_studies = find_data(config, query_ds)
+    if df_studies is None or len(df_studies) == 0: return None
 
     # drop unwanted columns
-    df_studies = df_studies.drop(config['extract']['to_drop_columns_studies'].split('\n'), axis=1, errors='ignore')
+    df_studies = df_studies.drop(config['retrieve']['to_drop_columns_studies'].split('\n'), axis=1, errors='ignore')
 
     # filter out irrelevant studies
     df_studies = df_studies[df_studies['Patient ID'].str.match('^\d+$')]
     df_studies = df_studies[~df_studies['Study Description'].isin(['EXTRINSEQUE'])]
     df_studies = df_studies.reset_index(drop=True)
+    
+    # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
+    n_max_studies = int(config['retrieve']['debug_n_max_studies_per_day'])
+    if n_max_studies != -1: df_studies = df_studies.iloc[0 : n_max_studies, :]
 
     return df_studies
 
@@ -90,7 +148,7 @@ def find_series_for_studies(config, df_studies):
     Returns:
         df (DataFrame): a DataFrame containing all retrieved series for all studies
     """
-
+    
     # this DataFrame stores the list of all the series found for all studies
     df_series = pd.DataFrame()
 
@@ -103,6 +161,10 @@ def find_series_for_studies(config, df_studies):
         if df_series_for_study is None:
             logging.warning('Skipping study because there are no usable Series associated with it')
             continue
+            
+        # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
+        n_max_series = int(config['retrieve']['debug_n_max_series_per_study'])
+        if n_max_series != -1: df_series_for_study = df_series_for_study.iloc[0 : n_max_series, :]
 
         # get the institution name(s) for this study based on the found series
         inst_names = list(set([inst_name.replace('  ', ' ') for inst_name in df_series_for_study.loc[:, 'Institution Name']]))
@@ -117,12 +179,13 @@ def find_series_for_studies(config, df_studies):
         df_studies.loc[i_study, 'Institution Name'] = inst_name
 
         # filter for the institution name
-        accepted_inst_names = config['extract']['accepted_institution_names'].split('\n')
+        accepted_inst_names = config['retrieve']['accepted_institution_names'].split('\n')
         # if this instiution name is not in the list of accepted institution names, skip it
         if inst_name.lower().replace(' ', '') not in accepted_inst_names:
             logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
             continue
 
+        logging.info('Appending {} series'.format(len(df_series_for_study)))
         # append the new series to the main series DataFrame
         df_series = df_series.append(df_series_for_study, sort=False, ignore_index=True)
 
@@ -130,7 +193,13 @@ def find_series_for_studies(config, df_studies):
     df_series['start_time'] = None
     df_series['end_time'] = None
     df_series['machine'] = None
+            
+    # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
+    n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
+    if n_max_series_per_day != -1: df_series = df_series.iloc[0 : n_max_series_per_day, :]
 
+    logging.info('Returning {} series'.format(len(df_series)))
+        
     return df_series
 
 
@@ -185,7 +254,7 @@ def find_series_for_study(config, study_row):
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     indices_to_exclude = []
     # go through each pattern and build the list of rows to exclude
-    for descr_pattern in config['extract']['series_descr_patterns_to_exclude'].split('\n'):
+    for descr_pattern in config['retrieve']['series_descr_patterns_to_exclude'].split('\n'):
         to_exclude_rows = df_series['Series Description'].str.match(descr_pattern, case=False)
         # gather all the indices
         indices_to_exclude.append(to_exclude_rows[to_exclude_rows == True].index)
@@ -201,13 +270,13 @@ def find_series_for_study(config, study_row):
     if len(df_series) == 0: return None
 
     # further filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
-    df_series = df_series[~df_series['Protocol Name'].isin(config['extract']['series_protocols_to_exclude'].split('\n'))]
+    df_series = df_series[~df_series['Protocol Name'].isin(config['retrieve']['series_protocols_to_exclude'].split('\n'))]
     logging.debug('Found {} series after filtering protocol names'.format(len(df_series)))
     # abort if no more result (all filtered)
     if len(df_series) == 0: return None
 
     # drop unwanted columns, sort and display
-    df_series = df_series.drop(config['extract']['to_drop_columns_series'].split('\n'), axis=1, errors='ignore')
+    df_series = df_series.drop(config['retrieve']['to_drop_columns_series'].split('\n'), axis=1, errors='ignore')
     df_series.sort_values(sort_columns, inplace=True)
     df_series.reset_index(drop=True, inplace=True)
 
@@ -228,7 +297,7 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
     logging.info('Going through {} series'.format(len(df_series)))
     
     # go through each series severall time (overall "pass")
-    for i_overall_try in range(int(config['extract']['n_max_overall_try'])):
+    for i_overall_try in range(int(config['retrieve']['n_max_overall_try'])):
     
         # change the name of the field storing the number of tries
         i_try_field_name = 'i_try_{}'.format(i_overall_try)
@@ -247,14 +316,14 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
                 # find information about this series by fetching some images
                 row_info = fetch_info_for_single_series(config, df_series.loc[i_series])
                 # if there is no data and we reached our maximum number of tries
-                if row_info is None and i_try >= int(config['extract']['n_max_try']):
+                if row_info is None and i_try >= int(config['retrieve']['n_max_try']):
                     # mark row as a failed trial and abort
                     df_series.loc[i_series, i_try_field_name] = -1
                     break
                 # if there is no data but we did not reach (yet) our maximum number of tries
                 elif row_info is None:
                     # delay the next retry
-                    time.sleep(float(config['extract']['inter_try_sleep_time']))
+                    time.sleep(float(config['retrieve']['inter_try_sleep_time']))
                     
             # abort processing for this series no data
             if row_info is None:
@@ -268,11 +337,12 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
 
     return df_series
 
+
 def show_stats_for_fetching_series_info(df_series):
     """
     Show some statistics on the fetching of information for seriess.
     Args:
-        df_series (DataFrame): a pandas DataFrame specifying the series to query
+        df_series (DataFrame): a pandas DataFrame holding the series
     Returns:
         None
     """
@@ -290,27 +360,27 @@ def show_stats_for_fetching_series_info(df_series):
         first = successes[successes == 1]
         multi = successes[successes > 1]
         # print out the stats for the first round
-        logging.info('Success    (1):     {:03d} / {:03d} ({:.1f}%)'.format(n_succ, n, 100 * n_succ / n))
-        logging.info('Failures    (1):    {:03d} / {:03d} ({:.1f}%)'.format(n_fail, n, 100 * n_fail / n))
+        logging.info('Success     (1): {:03d} / {:03d} ({:.1f}%)'.format(n_succ, n, 100 * n_succ / n))
+        logging.info('Failures    (1): {:03d} / {:03d} ({:.1f}%)'.format(n_fail, n, 100 * n_fail / n))
         logging.info('First tries (1): {:03d} / {:03d} ({:.1f}%)'.format(len(first), n_succ, 100 * len(first) / n_succ))
         logging.info('Multi-tries (1): {:03d} / {:03d} ({:.1f}%)'.format(len(multi), n_succ, 100 * len(multi) / n_succ))
         logging.info('Mean ± SD multi-tries (1): {:.2f} ± {:.2f}'.format(multi.mean(), multi.std()))
 
-    # if we have the information about the second round
-    if 'i_try_1' in df_series.columns:
-        # count successfull and failed trials on the second round
-        i_try_1 = df_series['i_try_1']
-        recoveries = i_try_1[(i_try_0 == -1) & (i_try_1 != -1)]
-        n_recov = len(recoveries)
-        total_failures = i_try_1[(i_try_0 == -1) & (i_try_1 == -1)]
-        recov_first = recoveries[recoveries == 1]
-        recov_multi = recoveries[recoveries > 1]
-        # print out the stats for the second round
-        logging.info('Recoveries  (2):  {:03d} / {:03d} ({:.1f}%)'.format(n_recov, n_fail, 100 * n_recov / n_fail))
-        logging.info('Total fails (2):  {:03d} / {:03d} ({:.1f}%)'.format(len(total_failures), n_fail, 100 * len(total_failures) / n_fail))
-        logging.info('First tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_first), n_recov, 100 * len(recov_first) / n_recov))
-        logging.info('Multi-tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_multi), n_recov, 100 * len(recov_multi) / n_recov))
-        logging.info('Mean ± SD multi-tries (2): {:.2f} ± {:.2f}'.format(recov_multi.mean(), recov_multi.std()))
+        # if we have the information about the second round
+        if 'i_try_1' in df_series.columns and n_fail > 0:
+            # count successfull and failed trials on the second round
+            i_try_1 = df_series['i_try_1']
+            recoveries = i_try_1[(i_try_0 == -1) & (i_try_1 != -1)]
+            n_recov = len(recoveries)
+            total_failures = i_try_1[(i_try_0 == -1) & (i_try_1 == -1)]
+            recov_first = recoveries[recoveries == 1]
+            recov_multi = recoveries[recoveries > 1]
+            # print out the stats for the second round
+            logging.info('Recoveries  (2):  {:03d} / {:03d} ({:.1f}%)'.format(n_recov, n_fail, 100 * n_recov / n_fail))
+            logging.info('Total fails (2):  {:03d} / {:03d} ({:.1f}%)'.format(len(total_failures), n_fail, 100 * len(total_failures) / n_fail))
+            logging.info('First tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_first), n_recov, 100 * len(recov_first) / n_recov))
+            logging.info('Multi-tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_multi), n_recov, 100 * len(recov_multi) / n_recov))
+            logging.info('Mean ± SD multi-tries (2): {:.2f} ± {:.2f}'.format(recov_multi.mean(), recov_multi.std()))
 
 
 def fetch_info_for_single_series(config, series_row):
@@ -476,67 +546,6 @@ def fetch_info_for_single_series(config, series_row):
     }
 
     return info
-
-
-def prune_by_time_overlap(df):
-    """
-    Prune the input DataFrame based on start/end time overlaps.
-    Args:
-        df (DataFrame): a pandas DataFrame to check for time overlaps
-    Returns:
-        df (DataFrame): the pruned pandas DataFrame
-    """
-
-    logging.info("Pruning DataFrame for time overlap")
-
-    # time format
-    FMT = '%H%M%S'
-
-    # remove duplicates and sort (rows that have exactly the same start/end times are redundant)
-    df = df.drop_duplicates(['start_time', 'end_time'])
-    df = df[(~df['start_time'].isnull()) & (df['start_time'] != 'nan')]
-    df = df.sort_values('start_time')
-
-    # prune series based on start/end time overlaps:
-    #   as long as some overlap was found, start over
-    overlap_found = True
-    while overlap_found:
-
-        # make sure we only loop if an overlap was found, and reset the index of the DataFrame
-        overlap_found = False
-
-        # go through each row
-        for i in range(1, len(df)):
-
-            # get the start/end times of the current row
-            curr_start = dt.strptime(df.iloc[i]['start_time'], FMT)
-            curr_end = dt.strptime(df.iloc[i]['end_time'], FMT)
-            # cget the start/end times of the previous row
-            prev_start = dt.strptime(df.iloc[i - 1]['start_time'], FMT)
-            prev_end = dt.strptime(df.iloc[i - 1]['end_time'], FMT)
-
-            # check for an overlap between the current and the previous row
-            latest_start = max(curr_start, prev_start)
-            earliest_end = min(curr_end, prev_end)
-            delta = (earliest_end - latest_start).seconds
-            overlap = max(0, delta)
-
-            # if there is no overlap, then the current time range is fully
-            #   overlapping with the previous row's range
-            overlap_found = overlap == 0
-            logging.debug('{:2}/{}: checking if {}-{} is included in {}-{}: overlap = {}'.format(i, len(df) - 1,
-                curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT),
-                prev_end.strftime(FMT), overlap_found))
-
-            # if any overlap was found, remove the redundant row and start over
-            if overlap_found:
-                logging.info('{:2}/{}: found an overlap: {}-{} is included in {}-{}'.format(i, len(df) - 1,
-                    curr_start.strftime(FMT), curr_end.strftime(FMT), prev_start.strftime(FMT),
-                    prev_end.strftime(FMT)))
-                df = df.drop(df.index[i])
-                break
-
-    return df
 
 
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
