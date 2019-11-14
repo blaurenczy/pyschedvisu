@@ -5,12 +5,12 @@ This is the master script running all the steps.
 """
 
 import logging
+from datetime import datetime as dt
 from configparser import ConfigParser
 
 from scripts.retrieve_data import retrieve_and_save_data_from_PACS
 from scripts.extract_data import extract_transform_and_save_data_from_files
 from scripts.create_report import create_report
-
 
 def run():
     """
@@ -22,7 +22,7 @@ def run():
     """
 
     # create the logger
-    logging.basicConfig(format='%(asctime)s|%(funcName)-30.30s:%(lineno)03s|%(levelname)-7s| %(message)s', level=logging.INFO)
+    create_logger()
 
     # load the configuration
     logging.info("Reading configuration")
@@ -38,6 +38,32 @@ def run():
     # create_report(config)
     logging.info("Finished running SchedVisu workflow")
 
+def create_logger():
+    """
+    Create a logger.
+    Args:
+        None
+    Returns:
+        None
+    """
+
+    # define the logging format
+    logging_format = '%(asctime)s|%(funcName)-30.30s:%(lineno)03s|%(levelname)-7s| %(message)s'
+
+    # create the logger writing to the file
+    logging.basicConfig(
+        format=logging_format,
+        level=logging.INFO,
+        filename='logs/{}.log'.format(dt.now().strftime('%Y%m%d_%H%M%S')),
+        filemode='w')
+
+    # define a Handler which writes messages to the console
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    # tell the handler to use this format
+    console.setFormatter(logging.Formatter(logging_format))
+    # add the handler to the root logger
+    logging.getLogger('').addHandler(console)
 
 def load_config():
     """
@@ -54,7 +80,6 @@ def load_config():
     config.read('config.ini')
 
     return config
-
 
 if __name__ == '__main__':
     run()
