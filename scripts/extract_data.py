@@ -28,7 +28,7 @@ def extract_transform_and_save_data_from_files(config):
     
     # go through the date range day by day
     for day in days_range:
-        logging.info('Processing {}'.format(day.strftime('%Y%m%d')))
+        logging.debug('Processing {}'.format(day.strftime('%Y%m%d')))
         
         # create the path where the input day's data would be stored
         day_str = day.strftime('%Y%m%d')
@@ -50,9 +50,9 @@ def extract_transform_and_save_data_from_files(config):
                     
     # get a summary of what machines are used in which institution names and modality
     df_groupby = do_series_groupby(config, df_series)
-    logging.info(df_groupby)
+    logging.debug(df_groupby)
 
-    return
+    return df_series, df_groupby
 
 
 def do_series_groupby(config, df_series):
