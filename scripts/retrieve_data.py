@@ -190,7 +190,7 @@ def find_series_for_studies(config, df_studies):
             logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
             continue
 
-        logging.info('Appending {} series'.format(len(df_series_for_study)))
+        logging.debug('Appending {} series'.format(len(df_series_for_study)))
         # append the new series to the main series DataFrame
         df_series = df_series.append(df_series_for_study, sort=False, ignore_index=True)
 

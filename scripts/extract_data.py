@@ -55,7 +55,6 @@ def extract_transform_and_save_data_from_files(config):
 
     return df_series
 
-
 def do_series_groupby(config, df_series_input):
     """
     Group series together using a defined set of columns.
@@ -70,7 +69,7 @@ def do_series_groupby(config, df_series_input):
 
     # work with a copy that has a "fresh" index
     df_series = df_series_input.reset_index(drop=True)
-    
+
     # drop the machine group list column to restart the processing from scratch
     df_series = df_series.drop(columns = ['Machine Group List', 'Machine Group'], errors = 'ignore')
 
@@ -95,7 +94,7 @@ def do_series_groupby(config, df_series_input):
     conf_machine_group = pd.DataFrame(
         [ [conf_machine, config['machines'][conf_machine]] for conf_machine in config['machines'] ],
         columns = ['Machine Group', 'Machine Group List'])
-    
+
     # merge the machine group name info back into the series DataFrame
     df_series = pd.merge(df_series, conf_machine_group, how='outer', on='Machine Group List')
 
@@ -116,7 +115,6 @@ def do_series_groupby(config, df_series_input):
         columns = {'Study Instance UID': 'Number of Studies'})['Number of Studies'])
 
     return df_series, df_count_series, df_count_studies
-
 
 def mark_second_takes(config, df_series):
     """
@@ -184,7 +182,6 @@ def mark_second_takes(config, df_series):
             df_series.loc[[i for i in indices_for_study if i < split_indices[0]], 'i_take'] = 1
 
     return df_series
-
 
 def DEPRECATED_UNUSED_prune_by_time_overlap(df):
     """
