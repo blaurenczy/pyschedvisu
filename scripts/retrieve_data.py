@@ -19,7 +19,6 @@ from pynetdicom.sop_class import (
     PatientRootQueryRetrieveInformationModelMove
 )
 
-
 def retrieve_and_save_data_from_PACS(config):
     """
     Retrieve and save the relevant series from the PACS for all days specified by the config.
@@ -28,9 +27,9 @@ def retrieve_and_save_data_from_PACS(config):
     Returns:
         None
     """
-    
+
     logging.info("Retrieving data from PACS")
-    
+
     # set debug level of pynetdicom based on the configuration file's content
     logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'])
 
@@ -38,13 +37,12 @@ def retrieve_and_save_data_from_PACS(config):
     start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
     end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
     days_range = pd.date_range(start_date, end_date)
-    
+
     # go through the date range day by day
     for day in days_range:
         logging.info('Processing {}'.format(day.strftime("%Y%m%d")))
         # fetch (or load) the data for the current day
         df_series_single_day = retrieve_and_save_single_day_data_from_PACS(config, day)
-
 
 def retrieve_and_save_single_day_data_from_PACS(config, day):
     """
@@ -60,11 +58,11 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
     day_str = day.strftime('%Y%m%d')
     day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
     day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y-%m-%d')))
-    
+
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
         logging.info('Skipping   {}: save file found at "{}", nothing to do'.format(day_str, day_save_file_path))
-    
+
     # if the current date has not already been retrieved and saved
     else:
         logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
@@ -80,13 +78,13 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         df_series = fetch_info_for_series(config, df_series)
         # get some statistics on the success / failure rates of fetching info for SERIES
         show_stats_for_fetching_series_info(df_series)
-        # exclude series where no information could be gathered
+        # exclude series where some information could be gathered (e.g. no end time or no machine)
         df_series = df_series[~df_series.end_time.isnull()]
+        df_series = df_series[df_series.machine != '']
         # make sure the save directory exists
         if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
         # save the series
         df_series.to_pickle(day_save_file_path)
-
 
 def find_studies_for_day(config, study_date, modality):
     """
@@ -131,13 +129,12 @@ def find_studies_for_day(config, study_date, modality):
     df_studies = df_studies[df_studies['Patient ID'].str.match('^\d+$')]
     df_studies = df_studies[~df_studies['Study Description'].isin(['EXTRINSEQUE'])]
     df_studies = df_studies.reset_index(drop=True)
-    
+
     # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
     n_max_studies = int(config['retrieve']['debug_n_max_studies_per_day'])
     if n_max_studies != -1: df_studies = df_studies.iloc[0 : n_max_studies, :]
 
     return df_studies
-
 
 def find_series_for_studies(config, df_studies):
     """
@@ -148,38 +145,46 @@ def find_series_for_studies(config, df_studies):
     Returns:
         df (DataFrame): a DataFrame containing all retrieved series for all studies
     """
-    
+
     # this DataFrame stores the list of all the series found for all studies
     df_series = pd.DataFrame()
 
     # go through each study
     logging.info('Going through {} studie(s)'.format(len(df_studies)))
     for i_study in range(len(df_studies)):
-        
+
         # find all series of the current study
         df_series_for_study = find_series_for_study(config, df_studies.iloc[i_study])
         if df_series_for_study is None:
             logging.warning('Skipping study because there are no usable Series associated with it')
             continue
-            
+
         # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
         n_max_series = int(config['retrieve']['debug_n_max_series_per_study'])
         if n_max_series != -1: df_series_for_study = df_series_for_study.iloc[0 : n_max_series, :]
 
+        # get the list of valid/accepted institution names from the config
+        accepted_inst_names = config['retrieve']['accepted_institution_names'].split('\n')
         # get the institution name(s) for this study based on the found series
         inst_names = list(set([inst_name.replace('  ', ' ') for inst_name in df_series_for_study.loc[:, 'Institution Name']]))
         # if we found multiple institution names
         if len(inst_names) > 1:
             logging.warning('Multiple institution names for study: "{}"'.format(' / '.join(inst_names)))
+
+            # check if any of these multiple institution names is valid / accepted
+            if all([inst_name.lower().replace(' ', '') not in accepted_inst_names for inst_name in inst_names]):
+                logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format('" & "'.join(inst_names)))
+                continue
+
+            # if any of the institution name is valid, continue with a "mixed" institution name
             inst_name = 'mixed'
+
         # if we found a single institution name
         else:
             inst_name = inst_names[0]
         # set the institution name for this study
         df_studies.loc[i_study, 'Institution Name'] = inst_name
 
-        # filter for the institution name
-        accepted_inst_names = config['retrieve']['accepted_institution_names'].split('\n')
         # if this instiution name is not in the list of accepted institution names, skip it
         if inst_name.lower().replace(' ', '') not in accepted_inst_names:
             logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
@@ -193,15 +198,14 @@ def find_series_for_studies(config, df_studies):
     df_series['start_time'] = None
     df_series['end_time'] = None
     df_series['machine'] = None
-            
+
     # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
     n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
     if n_max_series_per_day != -1: df_series = df_series.iloc[0 : n_max_series_per_day, :]
 
     logging.info('Returning {} series'.format(len(df_series)))
-        
-    return df_series
 
+    return df_series
 
 def find_series_for_study(config, study_row):
     """
@@ -282,7 +286,6 @@ def find_series_for_study(config, study_row):
 
     return df_series
 
-
 def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
     """
     Get some information (start & end time, machine, etc.) for each series based on the images found in the PACS.
@@ -295,20 +298,20 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
     """
 
     logging.info('Going through {} series'.format(len(df_series)))
-    
+
     # go through each series severall time (overall "pass")
     for i_overall_try in range(int(config['retrieve']['n_max_overall_try'])):
-    
+
         # change the name of the field storing the number of tries
         i_try_field_name = 'i_try_{}'.format(i_overall_try)
         df_series[i_try_field_name] = None
-        
+
         # go through each series
         for i_series in df_series.index:
-            
+
             # skip series where information already exists
             if df_series.loc[i_series, 'start_time'] is not None: continue
-            
+
             row_info, i_try = None, 0
             while row_info is None:
                 i_try += 1
@@ -324,7 +327,7 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
                 elif row_info is None:
                     # delay the next retry
                     time.sleep(float(config['retrieve']['inter_try_sleep_time']))
-                    
+
             # abort processing for this series no data
             if row_info is None:
                 logging.error('ERROR with series {}: no data found'.format(df_series.loc[i_series, 'Series Instance UID']))
@@ -337,7 +340,6 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
 
     return df_series
 
-
 def show_stats_for_fetching_series_info(df_series):
     """
     Show some statistics on the fetching of information for seriess.
@@ -348,7 +350,7 @@ def show_stats_for_fetching_series_info(df_series):
     """
 
     n = len(df_series)
-        
+
     # if we have the information about the first round
     if 'i_try_0' in df_series.columns:
         # count successfull and failed trials on the first round
@@ -381,7 +383,6 @@ def show_stats_for_fetching_series_info(df_series):
             logging.info('First tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_first), n_recov, 100 * len(recov_first) / n_recov))
             logging.info('Multi-tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_multi), n_recov, 100 * len(recov_multi) / n_recov))
             logging.info('Mean ± SD multi-tries (2): {:.2f} ± {:.2f}'.format(recov_multi.mean(), recov_multi.std()))
-
 
 def fetch_info_for_single_series(config, series_row):
     """
@@ -547,7 +548,6 @@ def fetch_info_for_single_series(config, series_row):
 
     return info
 
-
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
     """
     Creates a pydicom Dataset for querying based on the content of an input DataFrame's row, provided
@@ -588,7 +588,6 @@ def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
 
     return ds
 
-
 def _handle_result(event):
     """ Handle the result of the query request """
     logging.debug('Found a Dataset: {}'.format(event.dataset.SOPInstanceUID))
@@ -603,7 +602,6 @@ def _handle_result(event):
             logging.debug("Setting col '{}' for index {} with value '{}'".format(col, i, event.dataset[col].value))
     # return a "Success" code
     return 0x0000
-
 
 def get_data(config, query_dataset, to_fetch_fields):
     """
@@ -668,7 +666,6 @@ def get_data(config, query_dataset, to_fetch_fields):
         logging.debug("Connection closed")
     return df, datasets
 
-
 def find_data(config, query_dataset):
     """
     Retrieve the data specified by the query dataset from the PACS using the C-FIND mode.
@@ -719,5 +716,5 @@ def find_data(config, query_dataset):
         # release the association
         assoc.release()
         logging.debug("Connection closed")
-        
+
     return df
