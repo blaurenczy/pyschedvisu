@@ -5,6 +5,7 @@ This is the master script running all the steps.
 """
 
 import logging
+import os
 from datetime import datetime as dt
 from configparser import ConfigParser
 
@@ -47,16 +48,14 @@ def create_logger():
         None
     """
 
-    # define the logging format
+    # define the logging format and paths
     logging_format = '%(asctime)s|%(funcName)-30.30s:%(lineno)03s|%(levelname)-7s| %(message)s'
-
+    logging_dir = os.path.join('logs', '{}'.format(dt.now().strftime('%Y%m')))
+    logging_filename = os.path.join(logging_dir, '{}_schedvisu.log'.format(dt.now().strftime('%Y%m%d_%H%M%S')))
+    # make sure the log directory exists
+    if not os.path.exists(logging_dir): os.makedirs(logging_dir)
     # create the logger writing to the file
-    logging.basicConfig(
-        format=logging_format,
-        level=logging.INFO,
-        filename='logs/{}.log'.format(dt.now().strftime('%Y%m%d_%H%M%S')),
-        filemode='w')
-
+    logging.basicConfig(format=logging_format, level=logging.INFO, filename=logging_filename)
     # define a Handler which writes messages to the console
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
