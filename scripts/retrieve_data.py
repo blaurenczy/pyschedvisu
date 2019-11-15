@@ -30,9 +30,6 @@ def retrieve_and_save_data_from_PACS(config):
 
     logging.info("Retrieving data from PACS")
 
-    # set debug level of pynetdicom based on the configuration file's content
-    logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'])
-
     # get the date range from the config
     start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
     end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
@@ -310,6 +307,18 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
 
     logging.info('Going through {} series'.format(len(df_series)))
 
+    # fields to use as filters to get the image
+    image_level_filters = ['Patient ID', 'Series Date', 'Series Instance UID', 'Modality']
+    # fields to fetch from the DICOM header
+    to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime', 'Modality',
+                       'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+
+    # create the query datasets for each row
+    query_datasets = df_series.apply(
+        lambda row:
+        create_dataset_from_dataframe_row(row, 'IMAGE', incl=image_level_filters),
+        axis=1)
+
     # go through each series severall time (overall "pass")
     for i_overall_try in range(int(config['retrieve']['n_max_overall_try'])):
 
@@ -350,50 +359,6 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
             df_series.loc[i_series, 'Machine'] = row_info['Machine']
 
     return df_series
-
-def show_stats_for_fetching_series_info(df_series):
-    """
-    Show some statistics on the fetching of information for seriess.
-    Args:
-        df_series (DataFrame): a pandas DataFrame holding the series
-    Returns:
-        None
-    """
-
-    n = len(df_series)
-
-    # if we have the information about the first round
-    if 'i_try_0' in df_series.columns:
-        # count successfull and failed trials on the first round
-        i_try_0 = df_series['i_try_0']
-        failures = i_try_0[i_try_0 == -1]
-        n_fail = len(failures)
-        successes = i_try_0[i_try_0 != -1]
-        n_succ = len(successes)
-        first = successes[successes == 1]
-        multi = successes[successes > 1]
-        # print out the stats for the first round
-        logging.info('Success     (1): {:03d} / {:03d} ({:.1f}%)'.format(n_succ, n, 100 * n_succ / n))
-        logging.info('Failures    (1): {:03d} / {:03d} ({:.1f}%)'.format(n_fail, n, 100 * n_fail / n))
-        logging.info('First tries (1): {:03d} / {:03d} ({:.1f}%)'.format(len(first), n_succ, 100 * len(first) / n_succ))
-        logging.info('Multi-tries (1): {:03d} / {:03d} ({:.1f}%)'.format(len(multi), n_succ, 100 * len(multi) / n_succ))
-        logging.info('Mean ± SD multi-tries (1): {:.2f} ± {:.2f}'.format(multi.mean(), multi.std()))
-
-        # if we have the information about the second round
-        if 'i_try_1' in df_series.columns and n_fail > 0:
-            # count successfull and failed trials on the second round
-            i_try_1 = df_series['i_try_1']
-            recoveries = i_try_1[(i_try_0 == -1) & (i_try_1 != -1)]
-            n_recov = len(recoveries)
-            total_failures = i_try_1[(i_try_0 == -1) & (i_try_1 == -1)]
-            recov_first = recoveries[recoveries == 1]
-            recov_multi = recoveries[recoveries > 1]
-            # print out the stats for the second round
-            logging.info('Recoveries  (2):  {:03d} / {:03d} ({:.1f}%)'.format(n_recov, n_fail, 100 * n_recov / n_fail))
-            logging.info('Total fails (2):  {:03d} / {:03d} ({:.1f}%)'.format(len(total_failures), n_fail, 100 * len(total_failures) / n_fail))
-            logging.info('First tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_first), n_recov, 100 * len(recov_first) / n_recov))
-            logging.info('Multi-tries (2): {:03d} / {:03d} ({:.1f}%)'.format(len(recov_multi), n_recov, 100 * len(recov_multi) / n_recov))
-            logging.info('Mean ± SD multi-tries (2): {:.2f} ± {:.2f}'.format(recov_multi.mean(), recov_multi.std()))
 
 def fetch_info_for_single_series(config, series_row):
     """
@@ -559,7 +524,60 @@ def fetch_info_for_single_series(config, series_row):
 
     return info
 
-def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
+def show_stats_for_fetching_series_info(df_series):
+    """
+    Show some statistics on the fetching of information for seriess.
+    Args:
+        df_series (DataFrame): a pandas DataFrame holding the series
+    Returns:
+        None
+    """
+
+    try_level = 0
+    try_col_name = 'i_try_' + str(try_level)
+    # if we have the information about the first round
+    while try_col_name in df_series.columns:
+
+        # get what is the current total 
+        if try_level == 0:
+            n = len(df_series)
+            successfull_prev_indices = []
+        else:
+            n = len(df_series[df_series['i_try_' + str(try_level - 1)] == -1])
+            successfull_prev_indices = df_series[
+                (df_series[
+                    ['i_try_' + str(prev_try_level) for prev_try_level in range(0, try_level)]
+                ] > 0)
+                .apply(any, axis = 1)
+            ].index.tolist()
+
+        logging.info('Level {}: successfull_prev_indices = {}'.format(try_level, str(successfull_prev_indices)))
+        # count successfull and failed trials on the first round
+        i_try = df_series[try_col_name]
+        failures = i_try[i_try == -1]
+        logging.info('Level {}: failures = {}'.format(try_level, str(failures.index.tolist())))
+        n_fail = len(failures)
+        successes = i_try[i_try != -1]
+        n_succ = len(successes)
+        first = successes[successes == 1]
+        multi = successes[successes > 1]
+
+        # print out the stats for the first round
+        logging.info('Failures      ({}): {:03d} / {:03d} ({:.1f}%)'
+            .format(try_level, n_fail, n, 100 * n_fail / n))
+        logging.info('Success       ({}): {:03d} / {:03d} ({:.1f}%)'
+            .format(try_level, n_succ, n, 100 * n_succ / n))
+        logging.info('  First tries ({}): {:03d} / {:03d} ({:.1f}%)'
+            .format(try_level, len(first), n_succ, 100 * len(first) / n_succ))
+        logging.info('  Multi-tries ({}): {:03d} / {:03d} ({:.1f}%)'
+            .format(try_level, len(multi), n_succ, 100 * len(multi) / n_succ))
+        logging.info('    Mean ± SD multi-tries ({}): {:.2f} ± {:.2f}'
+            .format(try_level, multi.mean(), multi.std()))
+
+        try_level += 1
+        try_col_name = 'i_try_' + str(try_level)
+
+def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[], add_instance_number_filter=False):
     """
     Creates a pydicom Dataset for querying based on the content of an input DataFrame's row, provided
     as a Series.
@@ -568,6 +586,7 @@ def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
         qrlevel (str): a string specifying the query (retrieve) level (PATIENT / STUDY / SERIES / IMAGE)
         incl (list): list of the columns to include in the Dataset. By default: all.
         excl (list): list of the columns to exlude in the Dataset. By default: none.
+        add_instance_number_filter (bool): whether or not to add an InstanceNumber filter to the DataSet
     Returns:
         query_dataset (pydicom.dataset.Dataset): a Dataset object holding the filtering parameters
     """
@@ -597,6 +616,16 @@ def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[]):
         logging.debug('Setting "{}" ("{}") to "{}" (type: "{}")'.format(col, col_name, value, type(value)))
         setattr(ds, col_name, value)
 
+    if add_instance_number_filter:
+        # add some more filters for the 'PT' modality
+        if df_row['Number of Series Related Instances'] != '1':
+            image_number_filter = ['1', df_row['Number of Series Related Instances']]
+        else:
+            image_number_filter = '1'
+        # add the instance number filters for the 'PT' & 'CT' modalities
+        if df_row['Modality'] == 'PT' or df_row['Modality'] == 'CT':
+            ds.InstanceNumber = image_number_filter
+
     return ds
 
 def _handle_result(event):
@@ -614,12 +643,12 @@ def _handle_result(event):
     # return a "Success" code
     return 0x0000
 
-def get_data(config, query_dataset, to_fetch_fields):
+def get_data(config, query_datasets, to_fetch_fields):
     """
     Retrieve the data specified by the query dataset from the PACS using the C-MOVE mode.
     Args:
         config (dict): a dictionary holding all the necessary parameters
-        query_dataset (pydicom.dataset.Dataset): a Dataset object holding the filtering parameters
+        query_datasets (list of pydicom.dataset.Dataset): a list of Dataset object holding the filtering parameters
         to_fetch_fields (list): a list of strings specifying the fields to retrieve
     Returns:
         df (DataFrame): a DataFrame containing all retrieved data
@@ -654,27 +683,33 @@ def get_data(config, query_dataset, to_fetch_fields):
         # if the connection is successfully established
         if assoc.is_established:
             logging.debug("Association established")
-            # use the C-MOVE service to send the identifier
-            responses = assoc.send_c_move(query_dataset, config['PACS']['ae_title'],
-                                          PatientRootQueryRetrieveInformationModelMove)
-            logging.debug("Response(s) received")
-            i_response = 0
-            for (status, identifier) in responses:
-                if status:
-                    logging.debug('C-MOVE query status: 0x{0:04x}'.format(status.Status))
-                else:
-                    logging.error('Connection timed out, was aborted or received invalid response')
-                logging.debug('Status: {}, identifier: {}'.format(str(status), str(identifier)))
+
+            # go through each query data set and send a request for each within the same association
+            for query_dataset in query_datasets:
+                # use the C-MOVE service to send the identifier
+                responses = assoc.send_c_move(query_dataset, config['PACS']['ae_title'],
+                                              PatientRootQueryRetrieveInformationModelMove)
+                logging.debug("Response(s) received")
+                i_response = 0
+                for (status, identifier) in responses:
+                    if status:
+                        logging.debug('C-MOVE query status: 0x{0:04x}'.format(status.Status))
+                    else:
+                        logging.error('Connection timed out, was aborted or received invalid response')
+                    logging.debug('Status: {}, identifier: {}'.format(str(status), str(identifier)))
         else:
             logging.error('Association rejected, aborted or never connected')
+
     except:
         logging.error('Error during fetching of data (C-MOVE)')
         raise
+
     finally:
         # release the association and stop our Storage SCP
         assoc.release()
         scp.shutdown()
         logging.debug("Connection closed")
+
     return df, datasets
 
 def find_data(config, query_dataset):
@@ -720,9 +755,11 @@ def find_data(config, query_dataset):
                     logging.error('Connection timed out, was aborted or received invalid response')
         else:
             logging.error('Association rejected, aborted or never connected')
+
     except:
         logging.error('Error during finding of data (C-FIND)')
         raise
+
     finally:
         # release the association
         assoc.release()
