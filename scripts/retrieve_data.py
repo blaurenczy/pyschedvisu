@@ -40,7 +40,7 @@ def retrieve_and_save_data_from_PACS(config):
 
     # go through the date range day by day
     for day in days_range:
-        logging.info('Processing {}'.format(day.strftime("%Y%m%d")))
+        logging.debug('Processing {}'.format(day.strftime("%Y%m%d")))
         # fetch (or load) the data for the current day
         df_series_single_day = retrieve_and_save_single_day_data_from_PACS(config, day)
 
@@ -78,13 +78,23 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         df_series = fetch_info_for_series(config, df_series)
         # get some statistics on the success / failure rates of fetching info for SERIES
         show_stats_for_fetching_series_info(df_series)
-        # exclude series where some information could be gathered (e.g. no end time or no machine)
-        df_series = df_series[~df_series.end_time.isnull()]
-        df_series = df_series[df_series.machine != '']
+        # get all series that have something wrong/missing
+        df_failed_series = df_series[
+            (df_series['Start Time'].isnull())
+            | (df_series['End Time'].isnull())
+            | (df_series['Machine'] == '')
+            | (df_series['Institution Name'] == '')]
+        # exclude series where some information could not be gathered (e.g. no end time or no machine)
+        df_series = df_series.loc[df_failed_series.index, :]
+        df_series = df_series.reset_index(drop=True)
         # make sure the save directory exists
         if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
         # save the series
         df_series.to_pickle(day_save_file_path)
+        # save the failed series if required by the config
+        if config['extract'].getboolean('debug_save_failed_series'):
+            df_failed_series = df_failed_series.reset_index(drop=True)
+            df_failed_series.to_pickle(day_save_file_path.replace('.pkl', '_failed.pkl'))
 
 def find_studies_for_day(config, study_date, modality):
     """
@@ -165,6 +175,7 @@ def find_series_for_studies(config, df_studies):
 
         # get the list of valid/accepted institution names from the config
         accepted_inst_names = config['retrieve']['accepted_institution_names'].split('\n')
+        df_series_for_study.loc[df_series_for_study['Institution Name'].isnull(), 'Institution Name'] = 'NONE'
         # get the institution name(s) for this study based on the found series
         inst_names = list(set([inst_name.replace('  ', ' ') for inst_name in df_series_for_study.loc[:, 'Institution Name']]))
         # if we found multiple institution names
@@ -195,9 +206,9 @@ def find_series_for_studies(config, df_studies):
         df_series = df_series.append(df_series_for_study, sort=False, ignore_index=True)
 
     # add some required columns
-    df_series['start_time'] = None
-    df_series['end_time'] = None
-    df_series['machine'] = None
+    df_series['Start Time'] = None
+    df_series['End Time'] = None
+    df_series['Machine'] = None
 
     # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
     n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
@@ -310,7 +321,7 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
         for i_series in df_series.index:
 
             # skip series where information already exists
-            if df_series.loc[i_series, 'start_time'] is not None: continue
+            if df_series.loc[i_series, 'Start Time'] is not None: continue
 
             row_info, i_try = None, 0
             while row_info is None:
@@ -334,9 +345,9 @@ def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
                 continue
 
             # copy the relevant parameters into the main DataFrame
-            df_series.loc[i_series, 'start_time'] = row_info['start_time']
-            df_series.loc[i_series, 'end_time'] = row_info['end_time']
-            df_series.loc[i_series, 'machine'] = row_info['machine']
+            df_series.loc[i_series, 'Start Time'] = row_info['Start Time']
+            df_series.loc[i_series, 'End Time'] = row_info['End Time']
+            df_series.loc[i_series, 'Machine'] = row_info['Machine']
 
     return df_series
 
@@ -541,9 +552,9 @@ def fetch_info_for_single_series(config, series_row):
 
     # create a dictionary to return the gathered information
     info = {
-        'start_time': start_time_str,
-        'end_time': end_time_str,
-        'machine': df.loc[0, 'ManufacturerModelName']
+        'Start Time': start_time_str,
+        'End Time': end_time_str,
+        'Machine': df.loc[0, 'ManufacturerModelName']
     }
 
     return info

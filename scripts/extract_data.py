@@ -43,15 +43,22 @@ def extract_transform_and_save_data_from_files(config):
             # concatenate the series of the current day into the global DataFrame
             df_series = pd.concat([df_series, df_series_for_day], sort=False)
 
+            # load the failed series if required by the config
+            failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
+            if config['extract'].getboolean('debug_load_failed_series') and os.path.isfile(failed_day_save_file_path):
+                df_failed_series = pd.read_pickle(failed_day_save_file_path)
+                # concatenate the series of the current day into the global DataFrame
+                df_series = pd.concat([df_series, df_failed_series], sort=False)
+
         # if the current date has not already been retrieved and saved
         else:
             logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
 
-    """
     # get a summary of what machines are used in which institution names and modality
     df_series, df_count_series, _ = do_series_groupby(config, df_series)
-    logging.info(df_count_series)
-    """
+
+    # reset the index of the global DataFrame
+    df_series = df_series.reset_index(drop=True)
 
     return df_series
 
@@ -77,15 +84,14 @@ def do_series_groupby(config, df_series_input):
     df_series['Institution Name'] = df_series['Institution Name'].apply(lambda inst_name: inst_name.replace('  ', ' '))
 
     # rename the machine column name and "minify" the machine names
-    df_series = df_series.rename(columns = {'machine': 'Machine'})
-    df_series.loc[:, 'machine_short'] = df_series['Machine'].str.lower()
-    df_series.loc[:, 'machine_short'] = df_series['machine_short'].apply(lambda m: re.sub(r'[ _]', '', m))
+    df_series.loc[:, 'Machine short'] = df_series['Machine'].str.lower()
+    df_series.loc[:, 'Machine shortt'] = df_series['Machine short'].apply(lambda m: re.sub(r'[ _]', '', m))
 
     # create a machine group name (as a comma-separated list) for each study
-    df_machine_groups = df_series.groupby(['Study Instance UID'])['machine_short']
+    df_machine_groups = df_series.groupby(['Study Instance UID'])['Machine short']
     df_machine_groups = df_machine_groups.apply(lambda m: ','.join(sorted(list(set(m)))))
     df_machine_groups = df_machine_groups.reset_index().rename(
-        columns = {'machine_short': 'Machine Group List'})
+        columns = {'Machine short': 'Machine Group List'})
 
     # merge the machine group info back into the series DataFrame
     df_series = pd.merge(df_machine_groups, df_series, how='inner', on='Study Instance UID')
@@ -150,12 +156,12 @@ def mark_second_takes(config, df_series):
         # extract the list of indices for the current study
         indices_for_study = list(df_series_for_study.index.values)
         # sort according to time and keep the last index
-        df_last_series_for_study = df_series_for_study.sort_values('end_time')
+        df_last_series_for_study = df_series_for_study.sort_values('End Time')
         # there must be at least 2 series for any splitting
         if len(df_series_for_study) < 2: continue
 
         # check if there is any big difference in the successive series time
-        time_diff = df_last_series_for_study['end_time'].apply(lambda t: dt.strptime(t, FMT)).diff()
+        time_diff = df_last_series_for_study['End Time'].apply(lambda t: dt.strptime(t, FMT)).diff()
         time_diff_sec = time_diff[1:].apply(lambda td: td.seconds)
         # get the DataFrame indices where the time difference is bigger than the threshold
         split_indices = list(time_diff_sec[time_diff_sec > study_split_thresh].index)
@@ -175,8 +181,8 @@ def mark_second_takes(config, df_series):
         # if there is a single splitting time
         else:
             logging.info('  Splitting {}: split between {:3d}/{:3d} [T={}/{}, D={}]'
-                .format(study_str, split_indices[0], split_indices[0] - 1, df_series.loc[split_indices[0], 'end_time'],
-                df_series.loc[split_indices[0] - 1, 'end_time'], time_diff_sec[split_indices[0]]))
+                .format(study_str, split_indices[0], split_indices[0] - 1, df_series.loc[split_indices[0], 'End Time'],
+                df_series.loc[split_indices[0] - 1, 'End Time'], time_diff_sec[split_indices[0]]))
             # mark the series according to the split index
             df_series.loc[[i for i in indices_for_study if i >= split_indices[0]], 'i_take'] = 2
             df_series.loc[[i for i in indices_for_study if i < split_indices[0]], 'i_take'] = 1
@@ -199,9 +205,9 @@ def DEPRECATED_UNUSED_prune_by_time_overlap(df):
     FMT = '%H%M%S'
 
     # remove duplicates and sort (rows that have exactly the same start/end times are redundant)
-    df = df.drop_duplicates(['start_time', 'end_time'])
-    df = df[(~df['start_time'].isnull()) & (df['start_time'] != 'nan')]
-    df = df.sort_values('start_time')
+    df = df.drop_duplicates(['Start Time', 'End Time'])
+    df = df[(~df['Start Time'].isnull()) & (df['Start Time'] != 'nan')]
+    df = df.sort_values('Start Time')
 
     # prune series based on start/end time overlaps:
     #   as long as some overlap was found, start over
@@ -215,11 +221,11 @@ def DEPRECATED_UNUSED_prune_by_time_overlap(df):
         for i in range(1, len(df)):
 
             # get the start/end times of the current row
-            curr_start = dt.strptime(df.iloc[i]['start_time'], FMT)
-            curr_end = dt.strptime(df.iloc[i]['end_time'], FMT)
+            curr_start = dt.strptime(df.iloc[i]['Start Time'], FMT)
+            curr_end = dt.strptime(df.iloc[i]['End Time'], FMT)
             # cget the start/end times of the previous row
-            prev_start = dt.strptime(df.iloc[i - 1]['start_time'], FMT)
-            prev_end = dt.strptime(df.iloc[i - 1]['end_time'], FMT)
+            prev_start = dt.strptime(df.iloc[i - 1]['Start Time'], FMT)
+            prev_end = dt.strptime(df.iloc[i - 1]['End Time'], FMT)
 
             # check for an overlap between the current and the previous row
             latest_start = max(curr_start, prev_start)
