@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import logging
+import subprocess
 import time
 import os
 
@@ -294,236 +295,187 @@ def find_series_for_study(config, study_row):
 
     return df_series
 
-def fetch_info_for_series(config, df_series, i_try_field_name='i_try'):
+def fetch_info_for_series(config, df_series):
     """
     Get some information (start & end time, machine, etc.) for each series based on the images found in the PACS.
     Args:
         config (dict): a dictionary holding all the necessary parameters
         df_series (DataFrame): a pandas DataFrame holding the series
-        i_try_field_name (str): name of the field where to store the "number of tries" information
     Returns:
         df_series (DataFrame): a pandas DataFrame holding the series
     """
 
-    logging.info('Going through {} series'.format(len(df_series)))
-
     # fields to use as filters to get the image
     image_level_filters = ['Patient ID', 'Series Date', 'Series Instance UID', 'Modality']
     # fields to fetch from the DICOM header
-    to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime', 'Modality',
-                       'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+    to_fetch_fields = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime',
+        'Modality', 'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
 
-    # create the query datasets for each row
-    query_datasets = df_series.apply(
-        lambda row:
-        create_dataset_from_dataframe_row(row, 'IMAGE', incl=image_level_filters),
-        axis=1)
+    # create the trial counting column if it does not exist yet
+    if 'i_try' not in df_series.columns: df_series['i_try'] = None
 
-    # go through each series severall time (overall "pass")
-    for i_overall_try in range(int(config['retrieve']['n_max_overall_try'])):
+    # go through each series several times
+    for i_try in range(int(config['retrieve']['n_max_overall_try'])):
+        
+        # get the rows with missing info
+        missing_rows = df_series['Start Time'].isnull()
+        df_series.loc[missing_rows, 'i_try'] = i_try
+        df_series_to_fetch = df_series[missing_rows].copy()
+                       
+        # create the query datasets for each row
+        query_datasets = df_series_to_fetch.apply(lambda row:
+            create_dataset_from_dataframe_row(row, 'IMAGE', incl=image_level_filters, add_instance_number_filter=True),
+            axis=1)
+        logging.info('Created {} query datasets'.format(len(query_datasets)))
 
-        # change the name of the field storing the number of tries
-        i_try_field_name = 'i_try_{}'.format(i_overall_try)
-        df_series[i_try_field_name] = None
-
-        # go through each series
-        for i_series in df_series.index:
-
-            # skip series where information already exists
-            if df_series.loc[i_series, 'Start Time'] is not None: continue
-
-            row_info, i_try = None, 0
-            while row_info is None:
-                i_try += 1
-                df_series.loc[i_series, i_try_field_name] = i_try
-                # find information about this series by fetching some images
-                row_info = fetch_info_for_single_series(config, df_series.loc[i_series])
-                # if there is no data and we reached our maximum number of tries
-                if row_info is None and i_try >= int(config['retrieve']['n_max_try']):
-                    # mark row as a failed trial and abort
-                    df_series.loc[i_series, i_try_field_name] = -1
-                    break
-                # if there is no data but we did not reach (yet) our maximum number of tries
-                elif row_info is None:
-                    # delay the next retry
-                    time.sleep(float(config['retrieve']['inter_try_sleep_time']))
-
-            # abort processing for this series no data
-            if row_info is None:
-                logging.error('ERROR with series {}: no data found'.format(df_series.loc[i_series, 'Series Instance UID']))
-                continue
-
-            # copy the relevant parameters into the main DataFrame
-            df_series.loc[i_series, 'Start Time'] = row_info['Start Time']
-            df_series.loc[i_series, 'End Time'] = row_info['End Time']
-            df_series.loc[i_series, 'Machine'] = row_info['Machine']
+        # find information about this series by fetching some images
+        df_info = get_data(config, query_datasets, to_fetch_fields)
+        
+        # process the fetched info and merge it back into the main df_series DataFrame
+        df_series = process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_info)
 
     return df_series
 
-def fetch_info_for_single_series(config, series_row):
+def process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_info):
     """
-    Get some information (start & end time, machine, etc.) for a single series based on the images found in the PACS.
+    Calculate the end time of a NM series.
     Args:
-        config (dict): a dictionary holding all the necessary parameters
-        series_row (Series): a pandas Series (row) specifying the series to query
+        df_series (DataFrame): a pandas DataFrame holding the series
+        df_series_to_fetch (DataFrame): a pandas DataFrame holding the series that do not have been fetched yet
+        df_info (DataFrame): a pandas DataFrame holding the fetched info from the images
     Returns:
-        info (dict): a dictionary containing all the retrieved information
+        end_time_str (str): the "End Time" as a string
+    """
+    
+    # create masks for each modality
+    pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
+    # clean up the start times
+    df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
+    # convert the InstanceNumber field to an int (ignoring errors caused by empty values)
+    df_info['InstanceNumber'] = df_info['InstanceNumber'].astype(int, errors='ignore')
+    
+    # create a main info storage DataFrame
+    df_processed_info = DataFrame(columns=df_info.columns)
+
+    ## Process CT and PT images
+    df_ctpt = df_info[ct | pt].copy()
+    if len(df_ctpt) > 0:
+        # get the DataFrame as a grouped DataFrame counting the duplicated Series Instance UIDs (count() == 2)
+        dups_count = df_ctpt.groupby('SeriesInstanceUID').count()['PatientID'] == 2
+        # get the corresponding rows from the CT rows
+        dups = df_ctpt[df_ctpt['SeriesInstanceUID'].isin(dups_count[dups_count].index.tolist())]
+        # get the first and last instance of each duplicate
+        first_images = dups[dups['InstanceNumber'] == 1]
+        last_images = dups[dups['InstanceNumber'] > 1]
+        # merge back both the first and last image into a single row
+        df_ctpt = last_images.merge(first_images[['SeriesInstanceUID', 'PatientID', 'AcquisitionTime']], on=['SeriesInstanceUID', 'PatientID'])
+        # check for inconsistencies: not all rows are duplicates
+        if len(dups) != (len(df_ctpt) * 2):
+            logging.warning('Missing some images, number of duplicates is not equal to the total number of images ({} != {} * 2)'
+            .format(len(dups), len(df_ctpt)))
+        # check for inconsistencies: not a perfect match of 1 first image for 1 last image
+        if len(last_images) != len(first_images):
+            logging.warning('Missing some images, number of first & last images is not equal ({} != {})'.format(len(last_images), len(first_images)))
+
+        # rename the AcquisitionTime field from the last image as being the "End Time"
+        df_ctpt = df_ctpt.rename(columns={'AcquisitionTime_x': 'Start Time', 'AcquisitionTime_y': 'End Time'})
+
+        # append the CT and PT rows to the bigger DataFrame containing all modalities
+        df_processed_info = df_processed_info.append(df_ctpt, sort=False)
+
+    # Process NM images
+    df_nm = df_info[nm].copy()
+    if len(df_nm) > 0:
+        # use the AcquisitionTime as Start Time
+        df_nm['Start Time'] = df_nm['AcquisitionTime']
+        # call a function to calculate the end times
+        df_nm['End Time'] = df_nm.apply(get_NM_series_end_time, axis=1)
+
+        # append the NM rows to the bigger DataFrame containing all modalities
+        df_processed_info = df_processed_info.append(df_nm, sort=False)
+    
+    # if there is any resulting info
+    if len(df_processed_info) > 0:
+        # select the columns to merge back and rename them
+        df_processed_info = df_processed_info[
+            ['PatientID', 'SeriesInstanceUID', 'Start Time', 'End Time', 'ManufacturerModelName']]
+        df_processed_info.columns = ['Patient ID', 'Series Instance UID', 'Start Time', 'End Time', 'Machine']
+        # merge back the relevant info to this DataFrame
+        df_series = df_series.merge(df_processed_info, on=['Patient ID', 'Series Instance UID'], how='outer')
+        # clean up the columns, keeping only the values that are not null for each row
+        for f in ['Start Time', 'End Time', 'Machine']:
+            df_series[f] = df_series[f + '_y'].where(df_series[f + '_y'].notnull(), df_series[f + '_x'])
+            df_series.drop(columns=[f + '_y', f + '_x'], inplace=True)
+    
+    return df_series
+      
+def get_NM_series_end_time(series_row):
+    """
+    Calculate the end time of a NM series.
+    Args:
+        series_row (Series): a pandas Series holding the series.
+    Returns:
+        end_time_str (str): the "End Time" as a string
     """
 
-    # fields to use as filters to get the image
-    image_level_filters = ['Patient ID', 'Series Date', 'Series Instance UID', 'Modality']
+    # variable holding the duration of the current series
+    series_duration = None
 
-    # fields to fetch from the DICOM header
-    to_fetch_fields = ['InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime', 'Modality',
-                       'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+    # try to extract the "Phase Information Sequence"
+    phase_sequence = series_row['0x00540032']
+    # try to extract the "Rotation Information Sequence"
+    rotation_sequence = series_row['0x00540052']
 
-    # create an information string for the logging of the current series
-    UID = series_row['Series Instance UID']
-    series_string = '[XXX]: {}|{}|{}|IPP:{:7s}|{}...{}'.format(*series_row[
-        ['Series Date', 'Series Time', 'Modality', 'Patient ID']], UID[:8], UID[-4:])
-    if 'i_try_0' in series_row and 'i_try_1' in series_row:
-        series_string = series_string.replace('XXX', '{:3d}|{:2d}|{:2d}'.format(series_row.name, *series_row[['i_try_0', 'i_try_1']]))
-    if 'i_try_0' in series_row:
-        series_string = series_string.replace('XXX', '{:3d}|{:2d}'.format(series_row.name, series_row.i_try_0))
-    else:
-        series_string = series_string.replace('XXX', '{:3d}'.format(series_row.name))
-    # actually do the logging :-) This part is probably overly complicated, but it looks nice on the logging output!
-    logging.info('Fetching info for {}'.format(series_string))
+    if str(phase_sequence) != 'nan':
+        # extract the duration of each "phase"
+        phase_durations = []
+        for phase in phase_sequence:
+            frame_dur = int(phase['ActualFrameDuration'].value)
+            n_frames = int(phase['NumberOfFramesInPhase'].value)
+            phase_durations.append(frame_dur * n_frames)
+        # calculate the sum of all durations and convert it to seconds 
+        series_duration = sum(phase_durations)  / 1000
+        logging.debug('  {}: duration is based on phase sequence'.format(series_row['SeriesInstanceUID']))
 
-    # create the query dataset
-    query_ds = create_dataset_from_dataframe_row(series_row, 'IMAGE', incl=image_level_filters)
-    # add some more filters for the 'PT' modality
-    if series_row['Number of Series Related Instances'] != '1':
-        image_number_filter = ['1', series_row['Number of Series Related Instances']]
-    else:
-        image_number_filter = '1'
-    # add the instance number filters for the 'PT' & 'CT' modalities
-    if series_row['Modality'] == 'PT' or series_row['Modality'] == 'CT':
-        query_ds.InstanceNumber = image_number_filter
-    # display the Dataset
-    logging.debug('Query Dataset:')
-    for s in str(query_ds).split('\n'): logging.debug('    ' + s)
+    elif str(rotation_sequence) != 'nan':
+        # extract the duration of each "rotation"
+        rotation_durations = []
+        for rotation in rotation_sequence:
+            frame_dur = int(rotation['ActualFrameDuration'].value)
+            n_frames = int(rotation['NumberOfFramesInRotation'].value)
+            rotation_durations.append(frame_dur * n_frames)
+        # calculate the sum of all durations and convert it to seconds 
+        series_duration = sum(rotation_durations)  / 1000
+        logging.debug('  {}: duration is based on rotation sequence'.format(series_row['SeriesInstanceUID']))
 
-    # fetch the data (C-MOVE)
-    df, datasets = get_data(config, query_ds, to_fetch_fields)
+    # if no "phase sequence vector" is present, use the actual frame duration
+    elif str(series_row['ActualFrameDuration']) != 'nan' and str(series_row['NumberOfFrames']) != 'nan':
+        # calculate the duration and convert it to seconds 
+        series_duration = (int(series_row['ActualFrameDuration']) * series_row['NumberOfFrames']) / 1000
+        logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_row['SeriesInstanceUID']))
 
-    # sort the data and reset the index. Warning: this does not guarantee that the first index (0) has
-    #    the highest InstanceNumber. Data is sorted according to the AcquisitionTime
-    df = df.sort_values('AcquisitionTime')
-    df.reset_index(drop=True, inplace=True)
-
-    # if no data is found, skip with error
-    if len(df) == 0:
-        logging.debug('  ERROR for {}: no data found. "Series Description" field = "{}"'
-                      .format(series_string, series_row['Series Description']))
+    # if a duration could *not* be extracted
+    if series_duration is None:
+        logging.error('  ERROR for {}: no series duration found'.format(series_row['SeriesInstanceUID']))
         return
 
-    # if there are too many rows, skip with error
-    elif len(df) > 2:
-        logging.error('  ERROR for {}: too many rows found ({})'.format(series_string, len(df)))
-        return
-
-    # if there is only one row, duplicate it
-    elif len(df) == 1:
-        df.loc[1, :] = df.loc[0, :]
-
-    # if the image type is "SECONDARY", this means that we are not dealing with a raw image but with a processed image
-    if 'SECONDARY' in df.loc[0, 'ImageType']:
-
-        # try to rescue this series by looking at the before-last image
-        if int(series_row['Number of Series Related Instances']) > 1:
-            logging.warning('  WARNING for {}: secondary image type found. Trying to recover'.format(series_string))
-            # try to do another query for the before-last image
-            query_ds.InstanceNumber = str(int(series_row['Number of Series Related Instances']) - 1)
-            # fetch the data (C-MOVE)
-            df_before_last, _ = get_data(config, query_ds, to_fetch_fields)
-            # if no data was found, abort
-            if len(df_before_last) == 0:
-                logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" = "{}"'
-                          .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
-                return
-            # if data is still secondary, abort
-            elif 'SECONDARY' in df_before_last.iloc[0]['ImageType']: 
-                logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" = "{}"'
-                          .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
-                return 
-            # copy the data instead of the last frame
-            df.loc[0, :] = df_before_last.reset_index(drop=True).loc[0, :]
-            logging.info('  INFO for {}: secondary image type recovered: "{}". '
-                          .format(series_string, '-'.join(df.loc[0, 'ImageType'])))
-
-        # if this series does not have the option of going for the before-last InstanceNumber, abort
-        else:
-            logging.error('  ERROR for {}: secondary image type found: "{}". "Series Description" field = "{}"'
-                      .format(series_string, '-'.join(df.loc[0, 'ImageType']), series_row['Series Description']))
-            return
-
-    # exrtact the start and end times
-    start_time_str = str(df.loc[0, 'AcquisitionTime']).split('.')[0]
-    end_time_str = str(df.loc[1, 'AcquisitionTime']).split('.')[0]
-
-    # for modality type 'NM', the end time should be calculated
-    if df.loc[0, 'Modality'] == 'NM':
-
-        # try to get a duration for the current series
-        series_duration = None
-
-        # try to extract the "Phase Information Sequence"
-        phase_sequence = df.loc[0, '0x00540032']
-        # try to extract the "Rotation Information Sequence"
-        rotation_sequence = df.loc[0, '0x00540052']
-
-        if str(phase_sequence) != 'nan':
-            # extract the duration of each "phase"
-            phase_durations = []
-            for phase in phase_sequence:
-                frame_dur = int(phase['ActualFrameDuration'].value)
-                n_frames = int(phase['NumberOfFramesInPhase'].value)
-                phase_durations.append(frame_dur * n_frames)
-            # calculate the sum of all durations and convert it to seconds 
-            series_duration = sum(phase_durations)  / 1000
-            logging.debug('  {}: duration is based on phase sequence'.format(series_string))
-
-        elif str(rotation_sequence) != 'nan':
-            # extract the duration of each "rotation"
-            rotation_durations = []
-            for rotation in rotation_sequence:
-                frame_dur = int(rotation['ActualFrameDuration'].value)
-                n_frames = int(rotation['NumberOfFramesInRotation'].value)
-                rotation_durations.append(frame_dur * n_frames)
-            # calculate the sum of all durations and convert it to seconds 
-            series_duration = sum(rotation_durations)  / 1000
-            logging.debug('  {}: duration is based on rotation sequence'.format(series_string))
-
-        # if no "phase sequence vector" is present, use the actual frame duration
-        elif str(df.loc[0, 'ActualFrameDuration']) != 'nan' and str(df.loc[0, 'NumberOfFrames']) != 'nan':
-            # calculate the duration and convert it to seconds 
-            series_duration = (int(df.loc[0, 'ActualFrameDuration']) * df.loc[0, 'NumberOfFrames']) / 1000
-            logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_string))
-
-        # if a duration could *not* be extracted
-        if series_duration is None:
-            logging.error('  ERROR for {}: no series duration found'.format(series_string))
-            return
-
-        # if a duration could be extracted
-        else:
-            # calculate the duration from the last instance's start time, as there could
-            #    be multiple instances, even for a 'NM' series
-            start_time_str = str(df.loc[1, 'AcquisitionTime']).split('.')[0]
-            start_time = dt.strptime(start_time_str, '%H%M%S')
-            end_time = start_time + timedelta(seconds=series_duration)
-            end_time_str = end_time.strftime('%H%M%S')
-
-    # create a dictionary to return the gathered information
-    info = {
-        'Start Time': start_time_str,
-        'End Time': end_time_str,
-        'Machine': df.loc[0, 'ManufacturerModelName']
-    }
-
-    return info
-
+    # if a duration info could be extracted, calculate the duration from the last instance's
+    #   start time, as there could be multiple instances, even for a 'NM' series
+    start_time_str = str(series_row['AcquisitionTime']).split('.')[0]
+    start_time = dt.strptime(start_time_str, '%H%M%S')
+    end_time = start_time + timedelta(seconds=series_duration)
+    end_time_str = end_time.strftime('%H%M%S')
+        
+    return end_time_str
+    
+    df_series = df_series.drop(columns=['Machine', 'Start Time', 'End Time'], errors='ignore')
+    # restore a "fresh" copy of the saved data
+    df_info = df_info_save.copy()
+    # create masks for each modality
+    pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
+    # clean up the start times
+    df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
+    
 def show_stats_for_fetching_series_info(df_series):
     """
     Show some statistics on the fetching of information for seriess.
@@ -672,33 +624,48 @@ def get_data(config, query_datasets, to_fetch_fields):
     # add the Storage SCP's supported presentation contexts
     ae.supported_contexts = StoragePresentationContexts
     # start our Storage SCP in non-blocking mode
-    logging.debug("Creating receiving server")
-    scp = ae.start_server((config['PACS']['local_host'], config['PACS'].getint('local_port')),
-                          block=False, evt_handlers=handlers)
+    #logging.debug("Creating receiving server")
+    #scp = ae.start_server((config['PACS']['local_host'], config['PACS'].getint('local_port')),
+    #                      block=False, evt_handlers=handlers)
     logging.debug("Connecting to PACS")
     # Associate with peer AE at IP 127.0.0.1 and port 11112
     assoc = ae.associate(config['PACS']['host'], config['PACS'].getint('port'),
                          ae_title=config['PACS']['ae_called_title']) 
     try: 
-        # if the connection is successfully established
-        if assoc.is_established:
-            logging.debug("Association established")
 
-            # go through each query data set and send a request for each within the same association
-            for query_dataset in query_datasets:
+        # go through each query data set and send a request for each within the same association
+        i_query, n_query = 0, len(query_datasets)
+        for query_dataset in query_datasets:
+        
+            # if the connection is successfully established
+            if assoc.is_established:
+                logging.debug("Association established")
+
+                # for logging purposes, create a string describing the current query
+                UID = query_dataset.get('SeriesInstanceUID')
+                if UID is not None:
+                    # make sure every item on the list is not a "None" and then do the logging
+                    query_str_parts = map(str, [i_query + 1, n_query, query_dataset.get('SeriesDate'),
+                        query_dataset.get('Modality'), query_dataset.get('PatientID'), UID[:8], UID[-4:],
+                        query_dataset.get('InstanceNumber')])
+                    logging.info('Querying [{:>3s} /{:>3s}]: {:s}|{:s}|IPP:{:7s}|{:s}...{:s} (IN={})'.format(*query_str_parts))
+
                 # use the C-MOVE service to send the identifier
+                i_query += 1
                 responses = assoc.send_c_move(query_dataset, config['PACS']['ae_title'],
                                               PatientRootQueryRetrieveInformationModelMove)
+
                 logging.debug("Response(s) received")
                 i_response = 0
                 for (status, identifier) in responses:
                     if status:
-                        logging.debug('C-MOVE query status: 0x{0:04x}'.format(status.Status))
+                        logging.info('C-MOVE query status: 0x{0:04x}'.format(status.Status))
+                        logging.info('C-MOVE query identifier: {}'.format(str(identifier)))
                     else:
                         logging.error('Connection timed out, was aborted or received invalid response')
                     logging.debug('Status: {}, identifier: {}'.format(str(status), str(identifier)))
-        else:
-            logging.error('Association rejected, aborted or never connected')
+            else:
+                logging.error('Association rejected, aborted or never connected')
 
     except:
         logging.error('Error during fetching of data (C-MOVE)')
@@ -707,10 +674,10 @@ def get_data(config, query_datasets, to_fetch_fields):
     finally:
         # release the association and stop our Storage SCP
         assoc.release()
-        scp.shutdown()
+        #scp.shutdown()
         logging.debug("Connection closed")
 
-    return df, datasets
+    return df
 
 def find_data(config, query_dataset):
     """
@@ -738,8 +705,7 @@ def find_data(config, query_dataset):
         if assoc.is_established:
             logging.debug("Association established")
             # use the C-FIND service to send the identifier
-            responses = assoc.send_c_find(query_dataset,
-                                          PatientRootQueryRetrieveInformationModelFind)
+            responses = assoc.send_c_find(query_dataset, PatientRootQueryRetrieveInformationModelFind)
             logging.debug("Response(s) received")
             i_response = 0
             for (status, identifier) in responses:
@@ -766,3 +732,36 @@ def find_data(config, query_dataset):
         logging.debug("Connection closed")
 
     return df
+
+def get_data_dcm4che(config, query_dict):
+    """
+    Retrieve the data specified by the query dictionary from the PACS using the dcm4che toolkit (movescu & storescp exe files)
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        query_dict (dict): list of key-value pairs of the parameters for the query
+    Returns:
+        df (DataFrame): a DataFrame containing all retrieved data
+    """
+    
+    storescp_process = subprocess.Popen(
+        ['C:\\TEMP\\dcm4che-5.19.1\\bin\\storescp.bat',
+            '-b', 'CIVILISTENUC2@155.105.54.51:104',
+            '--directory', 'C:\\TEMP\\SchedVisu_DICOMs\\TEST'])
+        
+    movescu_process = subprocess.Popen(
+        ['C:\\TEMP\\dcm4che-5.19.1\\bin\\movescu.bat',
+            '-c', 'csps1FIR@155.105.3.105:104',
+            '-b', 'CIVILISTENUC2@155.105.54.51:104',
+            '--dest', 'CIVILISTENUC2',
+            '-L', 'IMAGE',
+            '-m', 'Modality=CT',
+            '-m', 'StudyDate=20191021',
+            '-m', 'InstanceNumber=1',
+            '-m', 'PatientID=686394'])
+    
+    while movescu_process.poll() is None:
+        logging.info('Still working 2')
+        time.sleep(0.5)
+    
+    movescu_process.kill()
+    storescp_process.kill()
