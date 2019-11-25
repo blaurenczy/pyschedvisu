@@ -2,8 +2,11 @@
 
 import logging
 import subprocess
+import psutil
+import signal
 import time
 import os
+import shutil
 
 from datetime import datetime as dt
 from datetime import timedelta
@@ -11,8 +14,10 @@ from datetime import timedelta
 import pandas as pd
 from pandas import DataFrame
 
+import pydicom
 from pydicom.dataset import Dataset
 from pydicom.tag import Tag
+from pydicom import dcmread
 
 from pynetdicom import AE, evt, StoragePresentationContexts
 from pynetdicom.sop_class import (
@@ -316,12 +321,12 @@ def fetch_info_for_series(config, df_series):
 
     # go through each series several times
     for i_try in range(int(config['retrieve']['n_max_overall_try'])):
-        
+
         # get the rows with missing info
         missing_rows = df_series['Start Time'].isnull()
         df_series.loc[missing_rows, 'i_try'] = i_try
         df_series_to_fetch = df_series[missing_rows].copy()
-                       
+
         # create the query datasets for each row
         query_datasets = df_series_to_fetch.apply(lambda row:
             create_dataset_from_dataframe_row(row, 'IMAGE', incl=image_level_filters, add_instance_number_filter=True),
@@ -330,7 +335,7 @@ def fetch_info_for_series(config, df_series):
 
         # find information about this series by fetching some images
         df_info = get_data(config, query_datasets, to_fetch_fields)
-        
+
         # process the fetched info and merge it back into the main df_series DataFrame
         df_series = process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_info)
 
@@ -346,14 +351,14 @@ def process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_in
     Returns:
         end_time_str (str): the "End Time" as a string
     """
-    
+
     # create masks for each modality
     pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
     # clean up the start times
     df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
     # convert the InstanceNumber field to an int (ignoring errors caused by empty values)
     df_info['InstanceNumber'] = df_info['InstanceNumber'].astype(int, errors='ignore')
-    
+
     # create a main info storage DataFrame
     df_processed_info = DataFrame(columns=df_info.columns)
 
@@ -393,7 +398,7 @@ def process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_in
 
         # append the NM rows to the bigger DataFrame containing all modalities
         df_processed_info = df_processed_info.append(df_nm, sort=False)
-    
+
     # if there is any resulting info
     if len(df_processed_info) > 0:
         # select the columns to merge back and rename them
@@ -406,9 +411,9 @@ def process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_in
         for f in ['Start Time', 'End Time', 'Machine']:
             df_series[f] = df_series[f + '_y'].where(df_series[f + '_y'].notnull(), df_series[f + '_x'])
             df_series.drop(columns=[f + '_y', f + '_x'], inplace=True)
-    
+
     return df_series
-      
+
 def get_NM_series_end_time(series_row):
     """
     Calculate the end time of a NM series.
@@ -465,9 +470,9 @@ def get_NM_series_end_time(series_row):
     start_time = dt.strptime(start_time_str, '%H%M%S')
     end_time = start_time + timedelta(seconds=series_duration)
     end_time_str = end_time.strftime('%H%M%S')
-        
+
     return end_time_str
-    
+
     df_series = df_series.drop(columns=['Machine', 'Start Time', 'End Time'], errors='ignore')
     # restore a "fresh" copy of the saved data
     df_info = df_info_save.copy()
@@ -475,7 +480,7 @@ def get_NM_series_end_time(series_row):
     pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
     # clean up the start times
     df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
-    
+
 def show_stats_for_fetching_series_info(df_series):
     """
     Show some statistics on the fetching of information for seriess.
@@ -580,105 +585,6 @@ def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[], add_inst
 
     return ds
 
-def _handle_result(event):
-    """ Handle the result of the query request """
-    logging.debug('Found a Dataset: {}'.format(event.dataset.SOPInstanceUID))
-    # get the next index
-    i = len(df) + 1
-    datasets.append(event.dataset)
-    # copy all requested information
-    for col in df.columns:
-        logging.debug("Setting col '{}' for index {}".format(col, i))
-        if Tag(col) in event.dataset.keys():
-            df.loc[i, col] = event.dataset[col].value
-            logging.debug("Setting col '{}' for index {} with value '{}'".format(col, i, event.dataset[col].value))
-    # return a "Success" code
-    return 0x0000
-
-def get_data(config, query_datasets, to_fetch_fields):
-    """
-    Retrieve the data specified by the query dataset from the PACS using the C-MOVE mode.
-    Args:
-        config (dict): a dictionary holding all the necessary parameters
-        query_datasets (list of pydicom.dataset.Dataset): a list of Dataset object holding the filtering parameters
-        to_fetch_fields (list): a list of strings specifying the fields to retrieve
-    Returns:
-        df (DataFrame): a DataFrame containing all retrieved data
-        datasets (list): a list of the retrieved datasets
-    """
-
-    logging.debug("Getting data")
-
-    # initialize a global DataFrame to store the results
-    global df
-    df = DataFrame(columns = to_fetch_fields)
-    # initialize a global list of Datasets to store the results
-    global datasets
-    datasets = []
-    # define the handlers
-    handlers = [(evt.EVT_C_STORE, _handle_result)]
-    # initialise the Application Entity
-    ae = AE(ae_title = config['PACS']['ae_title'])
-    # add a requested presentation context
-    ae.add_requested_context(PatientRootQueryRetrieveInformationModelMove)
-    # add the Storage SCP's supported presentation contexts
-    ae.supported_contexts = StoragePresentationContexts
-    # start our Storage SCP in non-blocking mode
-    #logging.debug("Creating receiving server")
-    #scp = ae.start_server((config['PACS']['local_host'], config['PACS'].getint('local_port')),
-    #                      block=False, evt_handlers=handlers)
-    logging.debug("Connecting to PACS")
-    # Associate with peer AE at IP 127.0.0.1 and port 11112
-    assoc = ae.associate(config['PACS']['host'], config['PACS'].getint('port'),
-                         ae_title=config['PACS']['ae_called_title']) 
-    try: 
-
-        # go through each query data set and send a request for each within the same association
-        i_query, n_query = 0, len(query_datasets)
-        for query_dataset in query_datasets:
-        
-            # if the connection is successfully established
-            if assoc.is_established:
-                logging.debug("Association established")
-
-                # for logging purposes, create a string describing the current query
-                UID = query_dataset.get('SeriesInstanceUID')
-                if UID is not None:
-                    # make sure every item on the list is not a "None" and then do the logging
-                    query_str_parts = map(str, [i_query + 1, n_query, query_dataset.get('SeriesDate'),
-                        query_dataset.get('Modality'), query_dataset.get('PatientID'), UID[:8], UID[-4:],
-                        query_dataset.get('InstanceNumber')])
-                    logging.info('Querying [{:>3s} /{:>3s}]: {:s}|{:s}|IPP:{:7s}|{:s}...{:s} (IN={})'.format(*query_str_parts))
-
-                # use the C-MOVE service to send the identifier
-                i_query += 1
-                responses = assoc.send_c_move(query_dataset, config['PACS']['ae_title'],
-                                              PatientRootQueryRetrieveInformationModelMove)
-
-                logging.debug("Response(s) received")
-                i_response = 0
-                for (status, identifier) in responses:
-                    if status:
-                        logging.info('C-MOVE query status: 0x{0:04x}'.format(status.Status))
-                        logging.info('C-MOVE query identifier: {}'.format(str(identifier)))
-                    else:
-                        logging.error('Connection timed out, was aborted or received invalid response')
-                    logging.debug('Status: {}, identifier: {}'.format(str(status), str(identifier)))
-            else:
-                logging.error('Association rejected, aborted or never connected')
-
-    except:
-        logging.error('Error during fetching of data (C-MOVE)')
-        raise
-
-    finally:
-        # release the association and stop our Storage SCP
-        assoc.release()
-        #scp.shutdown()
-        logging.debug("Connection closed")
-
-    return df
-
 def find_data(config, query_dataset):
     """
     Retrieve the data specified by the query dataset from the PACS using the C-FIND mode.
@@ -694,12 +600,12 @@ def find_data(config, query_dataset):
     # initialize a DataFrame to store the results
     df = DataFrame()
     # create the AE with the "find" information model
-    ae = AE(ae_title=config['PACS']['ae_title'])
+    ae = AE(ae_title=config['PACS']['local_ae_title'])
     ae.add_requested_context(PatientRootQueryRetrieveInformationModelFind)
     # associate with peer AE
     logging.debug("Connecting to PACS")
-    assoc = ae.associate(config['PACS']['host'], config['PACS'].getint('port'),
-                         ae_title=config['PACS']['ae_called_title'])
+    assoc = ae.associate(config['PACS']['remote_host'], config['PACS'].getint('remote_port'),
+                         ae_title=config['PACS']['remote_ae_title'])
     try:
         # if the connection is successfully established
         if assoc.is_established:
@@ -732,36 +638,175 @@ def find_data(config, query_dataset):
         logging.debug("Connection closed")
 
     return df
-
-def get_data_dcm4che(config, query_dict):
+    
+def get_data(config, query_dict, delete_data=True):
     """
-    Retrieve the data specified by the query dictionary from the PACS using the dcm4che toolkit (movescu & storescp exe files)
+    Retrieve the data specified by the query dictionary from the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        query_df (DataFrame): a DataFrame containing one row for each series to query
+    Returns:
+        df (DataFrame): a DataFrame containing all retrieved data
+    """
+
+    # first download the DICOM files
+    download_data_dcm4che(config, query_dict)
+    # then read in the DICOM files
+    df = read_DICOM_files(config)
+    # if required, delete the DICOM files
+    if delete_data:
+        delete_DICOM_files(config)
+
+def download_data_dcm4che(config, query_dict):
+    """
+    Download the data specified by the query dictionary from the PACS using the
+        dcm4che toolkit (movescu & storescp exe files).
     Args:
         config (dict): a dictionary holding all the necessary parameters
         query_dict (dict): list of key-value pairs of the parameters for the query
     Returns:
-        df (DataFrame): a DataFrame containing all retrieved data
+        None
     """
+
+    # tansform the dictionnary to a list of filtering parameters
+    filter_params = []
+    for key, item in query_dict.items():
+        if isinstance(item, set):
+            filter_params.extend(['-m', '{}={}'.format(key, '/'.join(item))])
+        else:
+            filter_params.extend(['-m', '{}={}'.format(key, item)])
+
+    # create the command to launch the Store SCP server receiving the DICOMs
+    storescp_commands = [
+        '{dcm4che_path}/storescp.bat'.format(**config['retrieve'])
+            .replace('/', '\\').replace('\\\\', '\\'),
+        '-b', '{local_ae_title}@{local_host}:{local_port}'.format(**config['PACS']),
+        '--directory', '{dicom_temp_dir}'.format(**config['retrieve'])
+            .replace('/', '\\').replace('\\\\', '\\')
+    ]
+
+    # create the command to launch the MOVE SCU command to tell the PACS to send the DICOMs
+    movescu_commands = [
+        '{dcm4che_path}/movescu.bat'.format(**config['retrieve'])
+            .replace('/', '\\').replace('\\\\', '\\'),
+        '-c', '{remote_ae_title}@{remote_host}:{remote_port}'.format(**config['PACS']),
+        '-b', '{local_ae_title}@{local_host}:{local_port}'.format(**config['PACS']),
+        '--dest', '{local_ae_title}'.format(**config['PACS']),
+        '-L', 'IMAGE'
+    ] + filter_params
     
-    storescp_process = subprocess.Popen(
-        ['C:\\TEMP\\dcm4che-5.19.1\\bin\\storescp.bat',
-            '-b', 'CIVILISTENUC2@155.105.54.51:104',
-            '--directory', 'C:\\TEMP\\SchedVisu_DICOMs\\TEST'])
+    # log the commands
+    logging.debug(storescp_commands)
+    logging.debug(movescu_commands)
+
+    # catch errors because we want to make sure to kill the processes we spawn
+    try:
+    
+        # launch both processes
+        storescp_process = subprocess.Popen(storescp_commands)
+        movescu_process = subprocess.Popen(movescu_commands)
+
+        logging.debug('Created storescp process (PID={})'.format(storescp_process.pid))
+        logging.debug('Created movescu process (PID={})'.format(movescu_process.pid))
+
+        # wait until the C-MOVE is done
+        while movescu_process.poll() is None:
+            logging.debug('Waiting for C-MOVE to happen')
+            time.sleep(0.5)
+    # catch errors
+    except:
+        logging.error('Error while getting data using dcm4che')
+        raise
         
-    movescu_process = subprocess.Popen(
-        ['C:\\TEMP\\dcm4che-5.19.1\\bin\\movescu.bat',
-            '-c', 'csps1FIR@155.105.3.105:104',
-            '-b', 'CIVILISTENUC2@155.105.54.51:104',
-            '--dest', 'CIVILISTENUC2',
-            '-L', 'IMAGE',
-            '-m', 'Modality=CT',
-            '-m', 'StudyDate=20191021',
-            '-m', 'InstanceNumber=1',
-            '-m', 'PatientID=686394'])
+    # make sure the processes are stopped
+    finally:
     
-    while movescu_process.poll() is None:
-        logging.info('Still working 2')
-        time.sleep(0.5)
-    
-    movescu_process.kill()
-    storescp_process.kill()
+        # kill the movescu process
+        if movescu_process is not None:
+            logging.debug('Killing movescu process')
+            movescu_process.terminate()
+            
+        # kill the storescp process
+        if storescp_process is not None:
+            logging.debug('Killing storescp process')
+            storescp_process.terminate()
+
+        # the storescp process spawns a "java.exe" process that we need to manually find and kill
+        find_and_kill_storescp_process()
+
+def find_and_kill_storescp_process():
+    """
+    The storescp process spawns a "java.exe" process that we need to manually find and kill.
+    Args:
+        None
+    Returns:
+        None
+    """
+
+    logging.debug('Going through all processes to find the storescp "java.exe" process')
+    # iterate over the all the running process
+    for proc in psutil.process_iter():
+        try:
+            # check if the current process' name contains the searched name, and if there is a match,
+            # check if the current java process contains the "storescp" string somewhere
+            if 'java.exe'.lower() in proc.name().lower()\
+                    and any(['storescp' in proc_cmd_part for proc_cmd_part in proc.cmdline()]):
+                # if yes, kill it, kill it with fire
+                logging.debug('Found storescp process and killing it')
+                proc.kill()
+                logging.debug('storescp process killed')
+
+        # capture errors for unaccessible processes
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+
+        # capture and display other errors
+        except:
+            logging.error('Problem killing storescp process')
+
+
+def read_DICOM_files(config):
+    """
+    Read in as a DataFrame the data downloaded from the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+    Returns:
+        df (DataFrame): a DataFrame containing all the read data
+    """
+
+    DICOM_file_names = os.listdir(config['retrieve']['dicom_temp_dir'])
+    logging.debug('Found {} DICOM file(s)'.format(len(DICOM_file_names)))
+    to_fetch_fields = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime',
+        'Modality', 'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+    df = pd.DataFrame(columns=to_fetch_fields)
+    i = 0
+    for DICOM_file_name in DICOM_file_names:
+        ds = dcmread(os.path.join(config['retrieve']['dicom_temp_dir'], DICOM_file_name),
+            stop_before_pixels=True)
+        for field in to_fetch_fields:
+            logging.debug("Setting field '{}' for index {}".format(field, i))
+            if Tag(field) in ds.keys():
+                logging.debug("Setting field '{}' for index {} with value '{}'".format(field, i, ds[field].value))
+                df.at[i, field] = ds[field].value
+        i += 1
+
+    return df 
+   
+def delete_DICOM_files(config):
+    """
+    Deletes the data downloaded from the PACS.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+    Returns:
+        None
+    """
+
+    for filename in os.listdir(config['retrieve']['dicom_temp_dir']):
+        file_path = os.path.join(config['retrieve']['dicom_temp_dir'], filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print('Failed to delete %s. Reason: %s' % (file_path, e))

@@ -32,8 +32,8 @@ def run():
     # run the workflow using the date range, settings, parameters, etc. found in the config
     logging.info("Starting SchedVisu workflow")
     retrieve_and_save_data_from_PACS(config)
-    extract_transform_and_save_data_from_files(config)
-    # create_report(config)
+    # extract_transform_and_save_data_from_files(config)
+    create_report(config)
     logging.info("Finished running SchedVisu workflow")
 
 def create_logger():
@@ -78,9 +78,9 @@ def load_config():
     config.read('config.ini')
 
     # set debug level based on the configuration file's content
-    logging.getLogger().setLevel(config['main']['debug_level'])
+    logging.getLogger().setLevel(config['main']['debug_level'].upper())
     # set debug level of pynetdicom based on the configuration file's content
-    logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'])
+    logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'].upper())
 
     return config
 
