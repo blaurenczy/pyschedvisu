@@ -65,39 +65,61 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
         logging.info('Skipping   {}: save file found at "{}", nothing to do'.format(day_str, day_save_file_path))
+        return
 
-    # if the current date has not already been retrieved and saved
-    else:
-        logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
-        # find all 'PT' and 'NM' studies for a day (specified as YYYYMMDD for the PACS)
-        df_studies = find_studies_for_day(config, day.strftime('%Y%m%d'), ['PT', 'NM'])
-        # abort if no studies provided as input
-        if df_studies is None or len(df_studies) == 0:
-            logging.warning('Warning at {}: no studies found'.format(day_str))
-            return
-        # get all series for the found studies
-        df_series = find_series_for_studies(config, df_studies)
-        # go through each series and find information about them
-        df_series = fetch_info_for_series(config, df_series)
-        # get some statistics on the success / failure rates of fetching info for SERIES
-        show_stats_for_fetching_series_info(df_series)
-        # get all series that have something wrong/missing
-        df_failed_series = df_series[
+    # if the current date has not already been retrieved and saved, process it
+    logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
+
+    # find all 'PT' and 'NM' studies for a day (specified as YYYYMMDD for the PACS)
+    df_studies = find_studies_for_day(config, day.strftime('%Y%m%d'), ['PT', 'NM'])
+    # abort if no studies provided as input
+    if df_studies is None or len(df_studies) == 0:
+        logging.warning('Warning at {}: no studies found'.format(day_str))
+        return
+
+    # get all series for the found studies
+    df_series = find_series_for_studies(config, df_studies)
+
+    # try to fetch the info for the series in an iterative way
+    n_retry = config['retrieve'].getint('n_retry_per_day')
+    # make sure we try at least once
+    if n_retry < 1: n_retry = 1
+    for i_try in range(n_retry):
+        # get all series that need to get more info
+        df_series_no_info = df_series[
             (df_series['Start Time'].isnull())
             | (df_series['End Time'].isnull())
-            | (df_series['Machine'] == '')
-            | (df_series['Institution Name'] == '')]
-        # exclude series where some information could not be gathered (e.g. no end time or no machine)
-        df_series = df_series.loc[df_failed_series.index, :]
-        df_series = df_series.reset_index(drop=True)
-        # make sure the save directory exists
-        if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
-        # save the series
-        df_series.to_pickle(day_save_file_path)
-        # save the failed series if required by the config
-        if config['extract'].getboolean('debug_save_failed_series'):
-            df_failed_series = df_failed_series.reset_index(drop=True)
-            df_failed_series.to_pickle(day_save_file_path.replace('.pkl', '_failed.pkl'))
+            | (df_series['Machine'] == '')]
+        # go through each non-fetched series and find information about them
+        logging.info('Fetching info for {} series, trial {}'.format(len(df_series_no_info), i_try))
+        df_series_fetched = fetch_info_for_series(config, df_series_no_info.copy())
+        # get all series that have something wrong/missing from the series that were just fetched
+        df_series_fetched_no_info = df_series_fetched[
+            (df_series_fetched['Start Time'].isnull())
+            | (df_series_fetched['End Time'].isnull())
+            | (df_series_fetched['Machine'] == '')]
+        # exclude (from the fetched series DataFrame) all series that do not have info
+        df_series_with_info = df_series_fetched.loc[~df_series_fetched.index.isin(df_series_fetched_no_info.index), :]
+        # exclude (from the main DataFrame) all series that were just fetched and that have some info
+        df_series = df_series.loc[~df_series.index.isin(df_series_with_info.index), :]
+        # add to the main DataFrame all the series that were just fetched and that have some info
+        df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
+        df_series = df_series.drop_duplicates('Series Instance UID')
+
+    # get all series that have something wrong/missing
+    df_series_failed = df_series_fetched_no_info.copy()
+    logging.info('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
+    
+    # make sure the save directory exists
+    if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
+    # save the series
+    logging.info('Saving {} series'.format(len(df_series)))
+    df_series.to_pickle(day_save_file_path)
+    # save the failed series if there are some and if it is required by the config
+    if len(df_series_failed) > 0 and config['retrieve'].getboolean('debug_save_failed_series'):
+        df_series_failed = df_series_failed.reset_index(drop=True)
+        df_series_failed.to_pickle(day_save_file_path.replace('.pkl', '_failed.pkl'))
+        logging.info('Saving {} failed series'.format(len(df_series_failed)))
 
 def find_studies_for_day(config, study_date, modality):
     """
@@ -217,7 +239,7 @@ def find_series_for_studies(config, df_studies):
     n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
     if n_max_series_per_day != -1: df_series = df_series.iloc[0 : n_max_series_per_day, :]
 
-    logging.info('Returning {} series'.format(len(df_series)))
+    logging.info('Found {} series'.format(len(df_series)))
 
     return df_series
 
@@ -310,107 +332,136 @@ def fetch_info_for_series(config, df_series):
         df_series (DataFrame): a pandas DataFrame holding the series
     """
 
-    # fields to use as filters to get the image
-    image_level_filters = ['Patient ID', 'Series Date', 'Series Instance UID', 'Modality']
-    # fields to fetch from the DICOM header
-    to_fetch_fields = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime',
-        'Modality', 'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+    # list of field names to extract for each modality
+    to_fetch_fields_ctpt = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName',
+        'AcquisitionTime', 'Modality']
+    to_fetch_fields_nm = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName',
+        'AcquisitionTime', 'Modality', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
 
-    # create the trial counting column if it does not exist yet
-    if 'i_try' not in df_series.columns: df_series['i_try'] = None
+    # create subsets of the DataFrame based on the modality
+    df_series_ctpt = df_series[df_series['Modality'].isin(['PT', 'CT'])]
+    df_series_nm = df_series[df_series['Modality'] == 'NM']
+    # initialize the variables to store the fetched info, which can remain empty
+    df_info_ctpt = []
+    df_info_nm = []
 
-    # go through each series several times
-    for i_try in range(int(config['retrieve']['n_max_overall_try'])):
+    # if there are some CT/PT rows to query
+    if len(df_series_ctpt) > 0:
+        # prepare the CT/PT queries for the first instance (first image)
+        query_dicts_ctpt = list(df_series_ctpt.apply(lambda row: {
+            'SeriesDate': row['Series Date'],
+            'PatientID': row['Patient ID'],
+            'SeriesInstanceUID': row['Series Instance UID'],
+            'InstanceNumber': '1'
+        }, axis=1))
+        # prepare the CT/PT queries for the last instance (last image)
+        df_last_frames = df_series_ctpt[df_series_ctpt['Number of Series Related Instances'] != '1']
+        if df_last_frames is None or len(df_last_frames) > 0:
+            query_dicts_ctpt.extend(
+                df_last_frames.apply(lambda row: {
+                    'SeriesDate': row['Series Date'],
+                    'PatientID': row['Patient ID'],
+                    'SeriesInstanceUID': row['Series Instance UID'],
+                    'InstanceNumber': row['Number of Series Related Instances']
+                }, axis=1))
+        # fetch the CT/PT data
+        logging.info('Getting CT/PT data ({} queries)'.format(len(query_dicts_ctpt)))
+        df_info_ctpt = get_data(config, query_dicts_ctpt, to_fetch_fields_ctpt)
 
-        # get the rows with missing info
-        missing_rows = df_series['Start Time'].isnull()
-        df_series.loc[missing_rows, 'i_try'] = i_try
-        df_series_to_fetch = df_series[missing_rows].copy()
+    # if there are some NM rows to query
+    if len(df_series_nm) > 0:
+        # prepare the NM queries for the first instance (first image)
+        query_dicts_nm = list(df_series_nm.apply(lambda row: {
+            'SeriesDate': row['Series Date'],
+            'PatientID': row['Patient ID'],
+            'SeriesInstanceUID': row['Series Instance UID']
+        }, axis=1))
+        # fetch the NM data
+        logging.info('Getting NM data ({} queries)'.format(len(query_dicts_nm)))
+        df_info_nm = get_data(config, query_dicts_nm, to_fetch_fields_nm)
 
-        # create the query datasets for each row
-        query_datasets = df_series_to_fetch.apply(lambda row:
-            create_dataset_from_dataframe_row(row, 'IMAGE', incl=image_level_filters, add_instance_number_filter=True),
-            axis=1)
-        logging.info('Created {} query datasets'.format(len(query_datasets)))
-
-        # find information about this series by fetching some images
-        df_info = get_data(config, query_datasets, to_fetch_fields)
-
-        # process the fetched info and merge it back into the main df_series DataFrame
-        df_series = process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_info)
+    # process the fetched info and merge it back into the main df_series DataFrame
+    df_series = process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
 
     return df_series
 
-def process_and_merge_info_back_into_series(df_series, df_series_to_fetch, df_info):
+def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm):
     """
-    Calculate the end time of a NM series.
+    Process the fetched info for each series (get machine name, start & end time, etc.) and merge this info
+        back into the main DataFrame (df_series).
     Args:
         df_series (DataFrame): a pandas DataFrame holding the series
-        df_series_to_fetch (DataFrame): a pandas DataFrame holding the series that do not have been fetched yet
-        df_info (DataFrame): a pandas DataFrame holding the fetched info from the images
+        df_info_ctpt (DataFrame): a pandas DataFrame holding the fetched info from the images for CT&PT
+        df_info_nm (DataFrame): a pandas DataFrame holding the fetched info from the images for NM
     Returns:
-        end_time_str (str): the "End Time" as a string
+        df_series (str): a pandas DataFrame holding the series
     """
 
-    # create masks for each modality
-    pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
-    # clean up the start times
-    df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
-    # convert the InstanceNumber field to an int (ignoring errors caused by empty values)
-    df_info['InstanceNumber'] = df_info['InstanceNumber'].astype(int, errors='ignore')
+    # Process PT/CT images
+    if len(df_info_ctpt) > 0:
+        
+        # get the images with a single instance
+        single_instances_UIDs = df_series.loc[
+            (df_series['Series Instance UID'].isin(df_info_ctpt['SeriesInstanceUID']))\
+            & (df_series['Number of Series Related Instances'] == '1'), 'Series Instance UID']
+        # duplicated them into the info DataFrame, so that they can also be merged together, as if there was two frames
+        df_info_ctpt_single_inst = df_info_ctpt[df_info_ctpt['SeriesInstanceUID'].isin(single_instances_UIDs)].copy()
+        df_info_ctpt_single_inst['InstanceNumber'] = 999999
+        df_info_ctpt_extended = pd.concat([df_info_ctpt, df_info_ctpt_single_inst], sort=True)
 
-    # create a main info storage DataFrame
-    df_processed_info = DataFrame(columns=df_info.columns)
+        # clean up the start times
+        df_info_ctpt_extended.loc[:, 'AcquisitionTime'] = df_info_ctpt_extended.loc[:, 'AcquisitionTime']\
+            .apply(lambda t: str(t).split('.')[0])
 
-    ## Process CT and PT images
-    df_ctpt = df_info[ct | pt].copy()
-    if len(df_ctpt) > 0:
-        # get the DataFrame as a grouped DataFrame counting the duplicated Series Instance UIDs (count() == 2)
-        dups_count = df_ctpt.groupby('SeriesInstanceUID').count()['PatientID'] == 2
-        # get the corresponding rows from the CT rows
-        dups = df_ctpt[df_ctpt['SeriesInstanceUID'].isin(dups_count[dups_count].index.tolist())]
-        # get the first and last instance of each duplicate
-        first_images = dups[dups['InstanceNumber'] == 1]
-        last_images = dups[dups['InstanceNumber'] > 1]
-        # merge back both the first and last image into a single row
-        df_ctpt = last_images.merge(first_images[['SeriesInstanceUID', 'PatientID', 'AcquisitionTime']], on=['SeriesInstanceUID', 'PatientID'])
-        # check for inconsistencies: not all rows are duplicates
-        if len(dups) != (len(df_ctpt) * 2):
-            logging.warning('Missing some images, number of duplicates is not equal to the total number of images ({} != {} * 2)'
-            .format(len(dups), len(df_ctpt)))
-        # check for inconsistencies: not a perfect match of 1 first image for 1 last image
-        if len(last_images) != len(first_images):
-            logging.warning('Missing some images, number of first & last images is not equal ({} != {})'.format(len(last_images), len(first_images)))
+        # regroup the first and last instance rows on a single row
+        df_info_ctpt_merged = df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] == 1]\
+            .merge(df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] > 1],
+                   on=['SeriesInstanceUID', 'PatientID', 'ManufacturerModelName', 'Modality'],
+                   suffixes=['_start', '_end'])
 
-        # rename the AcquisitionTime field from the last image as being the "End Time"
-        df_ctpt = df_ctpt.rename(columns={'AcquisitionTime_x': 'Start Time', 'AcquisitionTime_y': 'End Time'})
+        # rename the columns and keep the appropriate ones
+        df_info_ctpt_clean = df_info_ctpt_merged.rename(columns={
+                'SeriesInstanceUID': 'Series Instance UID',
+                'PatientID': 'Patient ID',
+                'ManufacturerModelName': 'Machine',
+                'AcquisitionTime_start': 'Start Time',
+                'AcquisitionTime_end': 'End Time'})\
+            .drop(columns=['InstanceNumber_start', 'InstanceNumber_end'])
 
-        # append the CT and PT rows to the bigger DataFrame containing all modalities
-        df_processed_info = df_processed_info.append(df_ctpt, sort=False)
+        # merge the info into the series DataFrame
+        df_series = df_series.merge(df_info_ctpt_clean, on=['Patient ID', 'Series Instance UID', 'Modality'],
+            how='outer')
 
-    # Process NM images
-    df_nm = df_info[nm].copy()
-    if len(df_nm) > 0:
-        # use the AcquisitionTime as Start Time
-        df_nm['Start Time'] = df_nm['AcquisitionTime']
-        # call a function to calculate the end times
-        df_nm['End Time'] = df_nm.apply(get_NM_series_end_time, axis=1)
-
-        # append the NM rows to the bigger DataFrame containing all modalities
-        df_processed_info = df_processed_info.append(df_nm, sort=False)
-
-    # if there is any resulting info
-    if len(df_processed_info) > 0:
-        # select the columns to merge back and rename them
-        df_processed_info = df_processed_info[
-            ['PatientID', 'SeriesInstanceUID', 'Start Time', 'End Time', 'ManufacturerModelName']]
-        df_processed_info.columns = ['Patient ID', 'Series Instance UID', 'Start Time', 'End Time', 'Machine']
-        # merge back the relevant info to this DataFrame
-        df_series = df_series.merge(df_processed_info, on=['Patient ID', 'Series Instance UID'], how='outer')
-        # clean up the columns, keeping only the values that are not null for each row
+        # keep only the relevant columns
         for f in ['Start Time', 'End Time', 'Machine']:
             df_series[f] = df_series[f + '_y'].where(df_series[f + '_y'].notnull(), df_series[f + '_x'])
             df_series.drop(columns=[f + '_y', f + '_x'], inplace=True)
+
+    # Process NM images
+    if len(df_info_nm) > 0:
+        # clean up the start times
+        df_info_nm.loc[:, 'AcquisitionTime'] = df_info_nm.loc[:, 'AcquisitionTime']\
+            .apply(lambda t: str(t).split('.')[0])
+        # use the AcquisitionTime as Start Time
+        df_info_nm['Start Time'] = df_info_nm['AcquisitionTime']
+        # call a function to calculate the End Times
+        df_info_nm['End Time'] = df_info_nm.apply(get_NM_series_end_time, axis=1)
+        # rename the columns and select the appropriate ones
+        df_info_nm_clean = df_info_nm.rename(columns={
+                'SeriesInstanceUID': 'Series Instance UID',
+                'PatientID': 'Patient ID',
+                'ManufacturerModelName': 'Machine'})\
+            [['Series Instance UID', 'Patient ID', 'Modality', 'Start Time', 'End Time', 'Machine']]
+        # merge the info into the series DataFrame
+        df_series = df_series.merge(df_info_nm_clean, on=['Patient ID', 'Series Instance UID', 'Modality'],
+            how='outer')
+        # keep only the relevant columns
+        for f in ['Start Time', 'End Time', 'Machine']:
+            df_series[f] = df_series[f + '_y'].where(df_series[f + '_y'].notnull(), df_series[f + '_x'])
+            df_series.drop(columns=[f + '_y', f + '_x'], inplace=True)
+
+    # remove duplicates
+    df_series = df_series.drop_duplicates('Series Instance UID')
 
     return df_series
 
@@ -480,59 +531,6 @@ def get_NM_series_end_time(series_row):
     pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
     # clean up the start times
     df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
-
-def show_stats_for_fetching_series_info(df_series):
-    """
-    Show some statistics on the fetching of information for seriess.
-    Args:
-        df_series (DataFrame): a pandas DataFrame holding the series
-    Returns:
-        None
-    """
-
-    try_level = 0
-    try_col_name = 'i_try_' + str(try_level)
-    # if we have the information about the first round
-    while try_col_name in df_series.columns:
-
-        # get what is the current total 
-        if try_level == 0:
-            n = len(df_series)
-            successfull_prev_indices = []
-        else:
-            n = len(df_series[df_series['i_try_' + str(try_level - 1)] == -1])
-            successfull_prev_indices = df_series[
-                (df_series[
-                    ['i_try_' + str(prev_try_level) for prev_try_level in range(0, try_level)]
-                ] > 0)
-                .apply(any, axis = 1)
-            ].index.tolist()
-
-        logging.info('Level {}: successfull_prev_indices = {}'.format(try_level, str(successfull_prev_indices)))
-        # count successfull and failed trials on the first round
-        i_try = df_series[try_col_name]
-        failures = i_try[i_try == -1]
-        logging.info('Level {}: failures = {}'.format(try_level, str(failures.index.tolist())))
-        n_fail = len(failures)
-        successes = i_try[i_try != -1]
-        n_succ = len(successes)
-        first = successes[successes == 1]
-        multi = successes[successes > 1]
-
-        # print out the stats for the first round
-        logging.info('Failures      ({}): {:03d} / {:03d} ({:.1f}%)'
-            .format(try_level, n_fail, n, 100 * n_fail / n))
-        logging.info('Success       ({}): {:03d} / {:03d} ({:.1f}%)'
-            .format(try_level, n_succ, n, 100 * n_succ / n))
-        logging.info('  First tries ({}): {:03d} / {:03d} ({:.1f}%)'
-            .format(try_level, len(first), n_succ, 100 * len(first) / n_succ))
-        logging.info('  Multi-tries ({}): {:03d} / {:03d} ({:.1f}%)'
-            .format(try_level, len(multi), n_succ, 100 * len(multi) / n_succ))
-        logging.info('    Mean ± SD multi-tries ({}): {:.2f} ± {:.2f}'
-            .format(try_level, multi.mean(), multi.std()))
-
-        try_level += 1
-        try_col_name = 'i_try_' + str(try_level)
 
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[], add_instance_number_filter=False):
     """
@@ -638,43 +636,43 @@ def find_data(config, query_dataset):
         logging.debug("Connection closed")
 
     return df
-    
-def get_data(config, query_dict, delete_data=True):
+
+def get_data(config, query_dicts, to_fetch_fields, delete_data=True):
     """
-    Retrieve the data specified by the query dictionary from the PACS.
+    Read in as a DataFrame the data downloaded from the PACS.
     Args:
         config (dict): a dictionary holding all the necessary parameters
-        query_df (DataFrame): a DataFrame containing one row for each series to query
+        query_dicts (list of dict): list of key-value pair dictionnaries of the parameters for each query
+        to_fetch_fields (list): list of field names to fetch from the DICOM Dataset object
+        delete_data (bool): whether or not to delete the DICOM files after reading them
     Returns:
         df (DataFrame): a DataFrame containing all retrieved data
     """
 
+    # make sure download folder is empty
+    delete_DICOM_files(config)
     # first download the DICOM files
-    download_data_dcm4che(config, query_dict)
+    download_data_dcm4che(config, query_dicts)
     # then read in the DICOM files
-    df = read_DICOM_files(config)
+    df = read_DICOM_files(config, to_fetch_fields)
     # if required, delete the DICOM files
     if delete_data:
         delete_DICOM_files(config)
 
-def download_data_dcm4che(config, query_dict):
+    return df
+
+def download_data_dcm4che(config, query_dicts):
     """
     Download the data specified by the query dictionary from the PACS using the
         dcm4che toolkit (movescu & storescp exe files).
     Args:
         config (dict): a dictionary holding all the necessary parameters
-        query_dict (dict): list of key-value pairs of the parameters for the query
+        query_dicts (list of dict): list of key-value pair dictionnaries of the parameters for each query
     Returns:
         None
     """
 
-    # tansform the dictionnary to a list of filtering parameters
-    filter_params = []
-    for key, item in query_dict.items():
-        if isinstance(item, set):
-            filter_params.extend(['-m', '{}={}'.format(key, '/'.join(item))])
-        else:
-            filter_params.extend(['-m', '{}={}'.format(key, item)])
+    logging.info('Getting data for {} queries'.format(len(query_dicts)))
 
     # create the command to launch the Store SCP server receiving the DICOMs
     storescp_commands = [
@@ -693,7 +691,7 @@ def download_data_dcm4che(config, query_dict):
         '-b', '{local_ae_title}@{local_host}:{local_port}'.format(**config['PACS']),
         '--dest', '{local_ae_title}'.format(**config['PACS']),
         '-L', 'IMAGE'
-    ] + filter_params
+    ]
     
     # log the commands
     logging.debug(storescp_commands)
@@ -702,34 +700,53 @@ def download_data_dcm4che(config, query_dict):
     # catch errors because we want to make sure to kill the processes we spawn
     try:
     
-        # launch both processes
-        storescp_process = subprocess.Popen(storescp_commands)
-        movescu_process = subprocess.Popen(movescu_commands)
-
+        # launch the server listening process
+        storescp_process = subprocess.Popen(storescp_commands,
+                stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         logging.debug('Created storescp process (PID={})'.format(storescp_process.pid))
-        logging.debug('Created movescu process (PID={})'.format(movescu_process.pid))
+
+        # store all the querying processes
+        movescu_processes = []
+
+        # for each query, send a C-MOVE query
+        logging.debug('Launching {} queries'.format(len(query_dicts)))
+        for query_dict in query_dicts:
+
+            # tansform the dictionnary to a list of filtering parameters
+            filter_params = []
+            for key, item in query_dict.items():
+                filter_params.extend(['-m', '{}={}'.format(key, item)])
+
+            # launch the query process
+            logging.debug(movescu_commands + filter_params)
+            movescu_process = subprocess.Popen(movescu_commands + filter_params,
+                stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            movescu_processes.append(movescu_process)
+            logging.debug('Created movescu process (PID={})'.format(movescu_process.pid))
 
         # wait until the C-MOVE is done
-        while movescu_process.poll() is None:
+        logging.info('Waiting for responses')
+        while any([movescu_process.poll() is None for movescu_process in movescu_processes]):
             logging.debug('Waiting for C-MOVE to happen')
-            time.sleep(0.5)
+            time.sleep(1)
+
     # catch errors
-    except:
-        logging.error('Error while getting data using dcm4che')
-        raise
+    except Exception as e:
+        logging.error('Error while getting data using dcm4che: {}'.format(str(e)))
         
-    # make sure the processes are stopped
+    # make sure the process is stopped
     finally:
     
-        # kill the movescu process
-        if movescu_process is not None:
+        logging.debug('Killing processes')
+
+        # kill all the movescu process
+        for movescu_process in movescu_processes:
             logging.debug('Killing movescu process')
             movescu_process.terminate()
-            
+
         # kill the storescp process
-        if storescp_process is not None:
-            logging.debug('Killing storescp process')
-            storescp_process.terminate()
+        logging.debug('Killing storescp process')
+        storescp_process.terminate()
 
         # the storescp process spawns a "java.exe" process that we need to manually find and kill
         find_and_kill_storescp_process()
@@ -765,24 +782,28 @@ def find_and_kill_storescp_process():
             logging.error('Problem killing storescp process')
 
 
-def read_DICOM_files(config):
+def read_DICOM_files(config, to_fetch_fields):
     """
     Read in as a DataFrame the data downloaded from the PACS.
     Args:
         config (dict): a dictionary holding all the necessary parameters
+        to_fetch_fields (list): list of field names to fetch from the DICOM Dataset object
     Returns:
         df (DataFrame): a DataFrame containing all the read data
     """
 
+    # get the list of all available files in folder
     DICOM_file_names = os.listdir(config['retrieve']['dicom_temp_dir'])
-    logging.debug('Found {} DICOM file(s)'.format(len(DICOM_file_names)))
-    to_fetch_fields = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName', 'AcquisitionTime',
-        'Modality', 'ImageType', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+    logging.info('Reading in {} DICOM file(s)'.format(len(DICOM_file_names)))
+    # create the Dataframe that will hold the content of each file
     df = pd.DataFrame(columns=to_fetch_fields)
+    # go through the files
     i = 0
     for DICOM_file_name in DICOM_file_names:
+        # read the DICOM file, without reading the pixels
         ds = dcmread(os.path.join(config['retrieve']['dicom_temp_dir'], DICOM_file_name),
             stop_before_pixels=True)
+        # copy each field back into the DataFrame
         for field in to_fetch_fields:
             logging.debug("Setting field '{}' for index {}".format(field, i))
             if Tag(field) in ds.keys():
@@ -790,7 +811,7 @@ def read_DICOM_files(config):
                 df.at[i, field] = ds[field].value
         i += 1
 
-    return df 
+    return df
    
 def delete_DICOM_files(config):
     """
@@ -809,4 +830,4 @@ def delete_DICOM_files(config):
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
         except Exception as e:
-            print('Failed to delete %s. Reason: %s' % (file_path, e))
+            logging.error('Failed to delete {}. Reason: {}'.format(file_path, str(e)))

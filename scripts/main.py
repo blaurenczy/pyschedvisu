@@ -32,8 +32,8 @@ def run():
     # run the workflow using the date range, settings, parameters, etc. found in the config
     logging.info("Starting SchedVisu workflow")
     retrieve_and_save_data_from_PACS(config)
-    # extract_transform_and_save_data_from_files(config)
-    create_report(config)
+    extract_transform_and_save_data_from_files(config)
+    # create_report(config)
     logging.info("Finished running SchedVisu workflow")
 
 def create_logger():

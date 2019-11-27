@@ -36,31 +36,33 @@ def extract_transform_and_save_data_from_files(config):
 
         # check if the current date has already been retrieved and saved
         if os.path.isfile(day_save_file_path):
-            logging.info('Skipping   {}: save file found at "{}", loading data'.format(day_str, day_save_file_path))
+            logging.info('Reading   {}: save file found at "{}", loading data'.format(day_str, day_save_file_path))
 
             # load the data for the current day
             df_series_for_day = pd.read_pickle(day_save_file_path)
             # concatenate the series of the current day into the global DataFrame
-            df_series = pd.concat([df_series, df_series_for_day], sort=False)
+            df_series = pd.concat([df_series, df_series_for_day], sort=True)
 
             # load the failed series if required by the config
             failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
             if config['extract'].getboolean('debug_load_failed_series') and os.path.isfile(failed_day_save_file_path):
                 df_failed_series = pd.read_pickle(failed_day_save_file_path)
-                # concatenate the series of the current day into the global DataFrame
-                df_series = pd.concat([df_series, df_failed_series], sort=False)
+                # concatenate the failed series into the global DataFrame
+                df_series = pd.concat([df_series, df_failed_series], sort=True)
 
         # if the current date has not already been retrieved and saved
         else:
             logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
 
-    # get a summary of what machines are used in which institution names and modality
-    df_series, df_count_series, _ = do_series_groupby(config, df_series)
+    df_count_series = None
+    if df_series is not None and len(df_series) > 0:
+        # get a summary of what machines are used in which institution names and modality
+        df_series, df_count_series, _ = do_series_groupby(config, df_series)
 
-    # reset the index of the global DataFrame
-    df_series = df_series.reset_index(drop=True)
+        # reset the index of the global DataFrame
+        df_series = df_series.reset_index(drop=True)
 
-    return df_series
+    return df_series, df_count_series
 
 def do_series_groupby(config, df_series_input):
     """
@@ -85,7 +87,7 @@ def do_series_groupby(config, df_series_input):
 
     # rename the machine column name and "minify" the machine names
     df_series.loc[:, 'Machine short'] = df_series['Machine'].str.lower()
-    df_series.loc[:, 'Machine shortt'] = df_series['Machine short'].apply(lambda m: re.sub(r'[ _]', '', m))
+    df_series.loc[:, 'Machine short'] = df_series['Machine short'].apply(lambda m: re.sub(r'[ _]', '', m))
 
     # create a machine group name (as a comma-separated list) for each study
     df_machine_groups = df_series.groupby(['Study Instance UID'])['Machine short']
@@ -106,6 +108,7 @@ def do_series_groupby(config, df_series_input):
 
     # mark the rows with an undefined machine group
     df_series.loc[df_series['Machine Group'].isnull(), 'Machine Group'] = 'mixed cases'
+    df_series = df_series[~df_series['Machine'].isnull()]
 
     # aggregate series to count the number of series for each sub-group
     groupby_columns = ['Machine Group', 'Machine Group List', 'Institution Name', 'Machine', 'Modality']
