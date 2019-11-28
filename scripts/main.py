@@ -29,12 +29,25 @@ def run():
     logging.info("Reading configuration")
     config = load_config()
 
-    # run the workflow using the date range, settings, parameters, etc. found in the config
-    logging.info("Starting SchedVisu workflow")
-    retrieve_and_save_data_from_PACS(config)
-    extract_transform_and_save_data_from_files(config)
-    # create_report(config)
-    logging.info("Finished running SchedVisu workflow")
+    try:
+        # run the workflow using the date range, settings, parameters, etc. found in the config
+        logging.warning("Starting SchedVisu workflow")
+        retrieve_and_save_data_from_PACS(config)
+        df_series = extract_transform_and_save_data_from_files(config)
+        # create_report(config)
+        logging.warning("Finished running SchedVisu workflow")
+
+    except Exception as e:
+        logging.error('Error while running workflow')
+        logging.error("-"*60)
+        logging.error(e, exc_info=True)
+        logging.error("-"*60)
+
+    except KeyboardInterrupt:
+        logging.error('Interrupted by user')
+
+    finally:
+        logging.shutdown()
 
 def create_logger():
     """

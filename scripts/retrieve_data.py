@@ -44,8 +44,15 @@ def retrieve_and_save_data_from_PACS(config):
     # go through the date range day by day
     for day in days_range:
         logging.debug('Processing {}'.format(day.strftime("%Y%m%d")))
-        # fetch (or load) the data for the current day
-        df_series_single_day = retrieve_and_save_single_day_data_from_PACS(config, day)
+        try:
+            # fetch (or load) the data for the current day
+            df_series_single_day = retrieve_and_save_single_day_data_from_PACS(config, day)
+
+        except Exception as e:
+            logging.error('Error while retrieving and saving data for {}'.format(day.strftime("%Y%m%d")))
+            logging.error("-"*60)
+            logging.error(e, exc_info=True)
+            logging.error("-"*60)
 
 def retrieve_and_save_single_day_data_from_PACS(config, day):
     """
@@ -64,21 +71,35 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
-        logging.info('Skipping   {}: save file found at "{}", nothing to do'.format(day_str, day_save_file_path))
-        return
+
+        # if some failed series exist and they must be processed
+        failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
+        if os.path.isfile(failed_day_save_file_path) and config['retrieve'].getboolean('recover_failed'):
+            logging.warning('Processing   {}: save file found at "{}", but failed series exists and must be processed'\
+                .format(day_str, day_save_file_path))
+            # load both series (valid and failed)
+            df_series = pd.read_pickle(day_save_file_path)
+            df_failed_series = pd.read_pickle(failed_day_save_file_path)
+            # concatenate the failed series into the global DataFrame
+            df_series = pd.concat([df_series, df_failed_series], sort=True)
+        # check if the current date has already been retrieved and saved but
+        else:
+            logging.info('Skipping   {}: save file found at "{}", nothing to do'.format(day_str, day_save_file_path))
+            return
 
     # if the current date has not already been retrieved and saved, process it
-    logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
+    else:
+        logging.warning('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
 
-    # find all 'PT' and 'NM' studies for a day (specified as YYYYMMDD for the PACS)
-    df_studies = find_studies_for_day(config, day.strftime('%Y%m%d'), ['PT', 'NM'])
-    # abort if no studies provided as input
-    if df_studies is None or len(df_studies) == 0:
-        logging.warning('Warning at {}: no studies found'.format(day_str))
-        return
+        # find all 'PT' and 'NM' studies for a day (specified as YYYYMMDD for the PACS)
+        df_studies = find_studies_for_day(config, day.strftime('%Y%m%d'), ['PT', 'NM'])
+        # abort if no studies provided as input
+        if df_studies is None or len(df_studies) == 0:
+            logging.warning('Warning at {}: no studies found'.format(day_str))
+            return
 
-    # get all series for the found studies
-    df_series = find_series_for_studies(config, df_studies)
+        # get all series for the found studies
+        df_series = find_series_for_studies(config, df_studies)
 
     # try to fetch the info for the series in an iterative way
     n_retry = config['retrieve'].getint('n_retry_per_day')
@@ -108,8 +129,8 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
     # get all series that have something wrong/missing
     df_series_failed = df_series_fetched_no_info.copy()
-    logging.info('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
-    
+    logging.warning('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
+
     # make sure the save directory exists
     if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
     # save the series
@@ -185,18 +206,22 @@ def find_series_for_studies(config, df_studies):
     df_series = pd.DataFrame()
 
     # go through each study
-    logging.info('Going through {} studie(s)'.format(len(df_studies)))
+    logging.warning('Finding all series for {} studie(s)'.format(len(df_studies)))
     for i_study in range(len(df_studies)):
 
         # find all series of the current study
         df_series_for_study = find_series_for_study(config, df_studies.iloc[i_study])
-        if df_series_for_study is None:
+        if df_series_for_study is None or len(df_series_for_study) <= 0:
             logging.warning('Skipping study because there are no usable Series associated with it')
             continue
 
         # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
         n_max_series = int(config['retrieve']['debug_n_max_series_per_study'])
         if n_max_series != -1: df_series_for_study = df_series_for_study.iloc[0 : n_max_series, :]
+
+        if 'Institution Name' not in df_series_for_study.columns:
+            logging.warning('Skipping study because there is no "Institution Name" information')
+            continue
 
         # get the list of valid/accepted institution names from the config
         accepted_inst_names = config['retrieve']['accepted_institution_names'].split('\n')
@@ -239,7 +264,7 @@ def find_series_for_studies(config, df_studies):
     n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
     if n_max_series_per_day != -1: df_series = df_series.iloc[0 : n_max_series_per_day, :]
 
-    logging.info('Found {} series'.format(len(df_series)))
+    logging.warning('Found {} series in total for the {} studies'.format(len(df_series), len(df_studies)))
 
     return df_series
 
@@ -257,7 +282,7 @@ def find_series_for_study(config, study_row):
     UID = study_row['Study Instance UID']
     study_string = '[{:2d}]: {}|{}|IPP:{:7s}|{}...{}'.format(study_row.name, *study_row[
         ['Study Date', 'Study Time', 'Patient ID']], UID[:8], UID[-4:])
-    logging.info('Fetching series for {}'.format(study_string))
+    logging.debug('Fetching series for {}'.format(study_string))
 
     # define some parameters
     series_level_filters = ['Study Date', 'Patient ID', 'Study Instance UID']
@@ -315,6 +340,16 @@ def find_series_for_study(config, study_row):
     # abort if no more result (all filtered)
     if len(df_series) == 0: return None
 
+    # keep only single instance NM series
+    df_series_NM_multi_instance = df_series[(df_series['Modality'] == 'NM')\
+        & (df_series['Number of Series Related Instances'].astype(int) > 1)]
+    if len(df_series_NM_multi_instance) > 0:
+        logging.warning('Discarding {} NM series because they have more than one instance'
+            .format(len(df_series_NM_multi_instance)))
+        df_series = df_series[~df_series.index.isin(df_series_NM_multi_instance)]
+        # abort if no more result (all filtered)
+        if len(df_series) == 0: return None
+
     # drop unwanted columns, sort and display
     df_series = df_series.drop(config['retrieve']['to_drop_columns_series'].split('\n'), axis=1, errors='ignore')
     df_series.sort_values(sort_columns, inplace=True)
@@ -365,7 +400,7 @@ def fetch_info_for_series(config, df_series):
                     'InstanceNumber': row['Number of Series Related Instances']
                 }, axis=1))
         # fetch the CT/PT data
-        logging.info('Getting CT/PT data ({} queries)'.format(len(query_dicts_ctpt)))
+        logging.warning('Getting CT/PT data ({} queries)'.format(len(query_dicts_ctpt)))
         df_info_ctpt = get_data(config, query_dicts_ctpt, to_fetch_fields_ctpt)
 
     # if there are some NM rows to query
@@ -377,7 +412,7 @@ def fetch_info_for_series(config, df_series):
             'SeriesInstanceUID': row['Series Instance UID']
         }, axis=1))
         # fetch the NM data
-        logging.info('Getting NM data ({} queries)'.format(len(query_dicts_nm)))
+        logging.warning('Getting NM data ({} queries)'.format(len(query_dicts_nm)))
         df_info_nm = get_data(config, query_dicts_nm, to_fetch_fields_nm)
 
     # process the fetched info and merge it back into the main df_series DataFrame
@@ -399,7 +434,7 @@ def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
 
     # Process PT/CT images
     if len(df_info_ctpt) > 0:
-        
+
         # get the images with a single instance
         single_instances_UIDs = df_series.loc[
             (df_series['Series Instance UID'].isin(df_info_ctpt['SeriesInstanceUID']))\
@@ -489,7 +524,7 @@ def get_NM_series_end_time(series_row):
             frame_dur = int(phase['ActualFrameDuration'].value)
             n_frames = int(phase['NumberOfFramesInPhase'].value)
             phase_durations.append(frame_dur * n_frames)
-        # calculate the sum of all durations and convert it to seconds 
+        # calculate the sum of all durations and convert it to seconds
         series_duration = sum(phase_durations)  / 1000
         logging.debug('  {}: duration is based on phase sequence'.format(series_row['SeriesInstanceUID']))
 
@@ -500,13 +535,13 @@ def get_NM_series_end_time(series_row):
             frame_dur = int(rotation['ActualFrameDuration'].value)
             n_frames = int(rotation['NumberOfFramesInRotation'].value)
             rotation_durations.append(frame_dur * n_frames)
-        # calculate the sum of all durations and convert it to seconds 
+        # calculate the sum of all durations and convert it to seconds
         series_duration = sum(rotation_durations)  / 1000
         logging.debug('  {}: duration is based on rotation sequence'.format(series_row['SeriesInstanceUID']))
 
     # if no "phase sequence vector" is present, use the actual frame duration
     elif str(series_row['ActualFrameDuration']) != 'nan' and str(series_row['NumberOfFrames']) != 'nan':
-        # calculate the duration and convert it to seconds 
+        # calculate the duration and convert it to seconds
         series_duration = (int(series_row['ActualFrameDuration']) * series_row['NumberOfFrames']) / 1000
         logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_row['SeriesInstanceUID']))
 
@@ -692,14 +727,14 @@ def download_data_dcm4che(config, query_dicts):
         '--dest', '{local_ae_title}'.format(**config['PACS']),
         '-L', 'IMAGE'
     ]
-    
+
     # log the commands
     logging.debug(storescp_commands)
     logging.debug(movescu_commands)
 
     # catch errors because we want to make sure to kill the processes we spawn
     try:
-    
+
         # launch the server listening process
         storescp_process = subprocess.Popen(storescp_commands,
                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
@@ -733,10 +768,10 @@ def download_data_dcm4che(config, query_dicts):
     # catch errors
     except Exception as e:
         logging.error('Error while getting data using dcm4che: {}'.format(str(e)))
-        
+
     # make sure the process is stopped
     finally:
-    
+
         logging.debug('Killing processes')
 
         # kill all the movescu process
@@ -794,7 +829,7 @@ def read_DICOM_files(config, to_fetch_fields):
 
     # get the list of all available files in folder
     DICOM_file_names = os.listdir(config['retrieve']['dicom_temp_dir'])
-    logging.info('Reading in {} DICOM file(s)'.format(len(DICOM_file_names)))
+    logging.warning('Reading in {} DICOM file(s)'.format(len(DICOM_file_names)))
     # create the Dataframe that will hold the content of each file
     df = pd.DataFrame(columns=to_fetch_fields)
     # go through the files
@@ -812,7 +847,7 @@ def read_DICOM_files(config, to_fetch_fields):
         i += 1
 
     return df
-   
+
 def delete_DICOM_files(config):
     """
     Deletes the data downloaded from the PACS.

@@ -27,42 +27,42 @@ def extract_transform_and_save_data_from_files(config):
 
     # go through the date range day by day
     for day in days_range:
-        logging.debug('Processing {}'.format(day.strftime('%Y%m%d')))
+        logging.debug('Reading {}'.format(day.strftime('%Y%m%d')))
 
-        # create the path where the input day's data would be stored
-        day_str = day.strftime('%Y%m%d')
-        day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
-        day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y-%m-%d')))
+        try:
 
-        # check if the current date has already been retrieved and saved
-        if os.path.isfile(day_save_file_path):
-            logging.info('Reading   {}: save file found at "{}", loading data'.format(day_str, day_save_file_path))
+            # create the path where the input day's data would be stored
+            day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
+            day_str = day.strftime('%Y%m%d')
+            day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y-%m-%d')))
 
-            # load the data for the current day
-            df_series_for_day = pd.read_pickle(day_save_file_path)
-            # concatenate the series of the current day into the global DataFrame
-            df_series = pd.concat([df_series, df_series_for_day], sort=True)
+            # check if the current date has already been retrieved and saved
+            if os.path.isfile(day_save_file_path):
+                logging.debug('Reading {}: save file found at "{}", loading data'.format(day_str, day_save_file_path))
 
-            # load the failed series if required by the config
-            failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
-            if config['extract'].getboolean('debug_load_failed_series') and os.path.isfile(failed_day_save_file_path):
-                df_failed_series = pd.read_pickle(failed_day_save_file_path)
-                # concatenate the failed series into the global DataFrame
-                df_series = pd.concat([df_series, df_failed_series], sort=True)
+                # load the data for the current day
+                df_series_for_day = pd.read_pickle(day_save_file_path)
+                # concatenate the series of the current day into the global DataFrame
+                df_series = pd.concat([df_series, df_series_for_day], sort=True)
 
-        # if the current date has not already been retrieved and saved
-        else:
-            logging.info('Processing {}: no save file found at "{}"'.format(day_str, day_save_file_path))
+                # load the failed series if required by the config
+                failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
+                if config['extract'].getboolean('debug_load_failed_series') and os.path.isfile(failed_day_save_file_path):
+                    df_failed_series = pd.read_pickle(failed_day_save_file_path)
+                    # concatenate the failed series into the global DataFrame
+                    df_series = pd.concat([df_series, df_failed_series], sort=True)
 
-    df_count_series = None
-    if df_series is not None and len(df_series) > 0:
-        # get a summary of what machines are used in which institution names and modality
-        df_series, df_count_series, _ = do_series_groupby(config, df_series)
+            # if the current date has not already been retrieved and saved
+            else:
+                logging.info('Reading {}: no save file found at "{}"'.format(day_str, day_save_file_path))
 
-        # reset the index of the global DataFrame
-        df_series = df_series.reset_index(drop=True)
+        except Exception as e:
+            logging.error('Error while reading data for {}'.format(day.strftime("%Y%m%d")))
+            logging.error("-"*60)
+            logging.error(e, exc_info=True)
+            logging.error("-"*60)
 
-    return df_series, df_count_series
+    return df_series
 
 def do_series_groupby(config, df_series_input):
     """
@@ -76,8 +76,10 @@ def do_series_groupby(config, df_series_input):
         df_count_studies (DataFrame): a pandas DataFrame holding the grouped series, counting the number of studies
     """
 
-    # work with a copy that has a "fresh" index
-    df_series = df_series_input.reset_index(drop=True)
+    # work with a copy that has a "fresh" index, and no failed series
+    df_series = df_series_input.reset_index(drop=True).copy()
+    df_series = df_series[~df_series['Machine'].isnull()]
+    df_series = df_series[df_series['Machine'] != '']
 
     # drop the machine group list column to restart the processing from scratch
     df_series = df_series.drop(columns = ['Machine Group List', 'Machine Group'], errors = 'ignore')
@@ -119,11 +121,35 @@ def do_series_groupby(config, df_series_input):
 
     # aggregate series to count the number of studies for each sub-group
     df_series_grouped_by_study = df_series.groupby(groupby_columns + ['Study Instance UID'])
-    df_count_studies = df_series_grouped_by_study.count().reset_index().groupby(groupby_columns).count()
+    df_count_studies = df_series_grouped_by_study.count().reset_index()
+    df_count_studies = df_count_studies.groupby(groupby_columns).count()
     df_count_studies = pd.DataFrame(df_count_studies.rename(
         columns = {'Study Instance UID': 'Number of Studies'})['Number of Studies'])
 
-    return df_series, df_count_series, df_count_studies
+    # aggregate series to count the number of series per day per machine
+    groupby_columns = ['Series Date', 'Machine Group']
+    df_series_grouped_by_series_day = df_series.groupby(groupby_columns)
+    df_count_series_day = pd.DataFrame(df_series_grouped_by_series_day.count())
+    df_count_series_day = pd.DataFrame(df_count_series_day.rename(
+        columns = {'Series Instance UID': 'Number of Series'})['Number of Series'])
+    df_count_series_day = df_count_series_day.unstack()
+
+    # aggregate series to count the number of studies per day per machine
+    df_series_grouped_by_study_day = df_series.groupby(groupby_columns + ['Study Instance UID'])
+    df_count_study_day = df_series_grouped_by_study_day.count().reset_index()
+    df_count_study_day = df_count_study_day.groupby(groupby_columns).count()
+    df_count_study_day = pd.DataFrame(df_count_study_day.rename(
+        columns = {'Series Instance UID': 'Number of Studies'})['Number of Studies'])
+    df_count_study_day = df_count_study_day.unstack()
+
+    # aggregate series to count the number of studies per weekday per machine
+    df_count_study_weekday = df_count_study_day.copy()
+    df_count_study_weekday['Weekday'] = pd.Categorical([
+        dt.strptime(d, '%Y%m%d').strftime("%A") for d in df_count_study_weekday.index],
+        categories=['Monday','Tuesday','Wednesday','Thursday','Friday'], ordered=True)
+    df_count_study_weekday = df_count_study_weekday.groupby('Weekday').sum()
+
+    return df_series, df_count_series, df_count_studies, df_count_series_day, df_count_study_day, df_count_study_weekday
 
 def mark_second_takes(config, df_series):
     """
