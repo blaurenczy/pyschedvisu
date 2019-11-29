@@ -102,7 +102,9 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         df_series = find_series_for_studies(config, df_studies)
 
     # try to fetch the info for the series in an iterative way
+    i_try = 0
     n_retry = config['retrieve'].getint('n_retry_per_day')
+    n_series_per_batch = config['retrieve'].getint('n_series_per_batch')
     # make sure we try at least once
     if n_retry < 1: n_retry = 1
     for i_try in range(n_retry):
@@ -110,25 +112,35 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         df_series_no_info = df_series[
             (df_series['Start Time'].isnull())
             | (df_series['End Time'].isnull())
-            | (df_series['Machine'] == '')]
-        # go through each non-fetched series and find information about them
-        logging.info('Fetching info for {} series, trial {}'.format(len(df_series_no_info), i_try))
-        df_series_fetched = fetch_info_for_series(config, df_series_no_info.copy())
-        # get all series that have something wrong/missing from the series that were just fetched
-        df_series_fetched_no_info = df_series_fetched[
-            (df_series_fetched['Start Time'].isnull())
-            | (df_series_fetched['End Time'].isnull())
-            | (df_series_fetched['Machine'] == '')]
-        # exclude (from the fetched series DataFrame) all series that do not have info
-        df_series_with_info = df_series_fetched.loc[~df_series_fetched.index.isin(df_series_fetched_no_info.index), :]
-        # exclude (from the main DataFrame) all series that were just fetched and that have some info
-        df_series = df_series.loc[~df_series.index.isin(df_series_with_info.index), :]
-        # add to the main DataFrame all the series that were just fetched and that have some info
-        df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
-        df_series = df_series.drop_duplicates('Series Instance UID')
+            | (df_series['Machine'] == '')].copy()
+        # process the series that need info as batches
+        for i_series in range(0, len(df_series_no_info), n_series_per_batch):
+            i_batch_start = i_series
+            i_batch_end = min(len(df_series_no_info), i_series + n_series_per_batch)
+            # limit the maximum number of series that is queried at once
+            df_series_no_info_batch = df_series_no_info.iloc[i_batch_start:i_batch_end, :].copy()
+            # go through each non-fetched series and find information about them
+            logging.info('Fetching info for {} series, trial {}, batch {} - {}'
+                .format(len(df_series_no_info_batch), i_try, i_batch_start, i_batch_end - 1))
+            df_series_fetched = fetch_info_for_series(config, df_series_no_info_batch)
+            # get all series that have something wrong/missing from the series that were just fetched
+            df_series_fetched_no_info = df_series_fetched[
+                (df_series_fetched['Start Time'].isnull())
+                | (df_series_fetched['End Time'].isnull())
+                | (df_series_fetched['Machine'] == '')]
+            # exclude (from the fetched series DataFrame) all series that do not have info
+            df_series_with_info = df_series_fetched.loc[
+                ~df_series_fetched.index.isin(df_series_fetched_no_info.index), :]
+            # exclude (from the main DataFrame) all series that were just fetched and that have some info
+            df_series = df_series.loc[~df_series.index.isin(df_series_with_info.index), :]
+            # add to the main DataFrame all the series that were just fetched and that have some info
+            df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
+            df_series = df_series.drop_duplicates('Series Instance UID')
 
     # get all series that have something wrong/missing
     df_series_failed = df_series_fetched_no_info.copy()
+    # exclude (from the main DataFrame) all series that failed
+    df_series = df_series.loc[~df_series.index.isin(df_series_failed.index), :]
     logging.warning('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
 
     # make sure the save directory exists
@@ -512,42 +524,55 @@ def get_NM_series_end_time(series_row):
     # variable holding the duration of the current series
     series_duration = None
 
-    # try to extract the "Phase Information Sequence"
-    phase_sequence = series_row['0x00540032']
-    # try to extract the "Rotation Information Sequence"
-    rotation_sequence = series_row['0x00540052']
+    try:
+        # try to extract the "Phase Information Sequence"
+        phase_sequence = series_row['0x00540032']
+        # try to extract the "Rotation Information Sequence"
+        rotation_sequence = series_row['0x00540052']
 
-    if str(phase_sequence) != 'nan':
-        # extract the duration of each "phase"
-        phase_durations = []
-        for phase in phase_sequence:
-            frame_dur = int(phase['ActualFrameDuration'].value)
-            n_frames = int(phase['NumberOfFramesInPhase'].value)
-            phase_durations.append(frame_dur * n_frames)
-        # calculate the sum of all durations and convert it to seconds
-        series_duration = sum(phase_durations)  / 1000
-        logging.debug('  {}: duration is based on phase sequence'.format(series_row['SeriesInstanceUID']))
+        if str(phase_sequence) != 'nan':
+            logging.debug(phase_sequence)
+            # extract the duration of each "phase"
+            phase_durations = []
+            for phase in phase_sequence:
+                frame_dur = int(phase['ActualFrameDuration'].value)
+                n_frames = int(phase['NumberOfFramesInPhase'].value)
+                phase_durations.append(frame_dur * n_frames)
+            # calculate the sum of all durations and convert it to seconds
+            series_duration = sum(phase_durations)  / 1000
+            logging.debug('  {}: duration is based on phase sequence'.format(series_row['SeriesInstanceUID']))
 
-    elif str(rotation_sequence) != 'nan':
-        # extract the duration of each "rotation"
-        rotation_durations = []
-        for rotation in rotation_sequence:
-            frame_dur = int(rotation['ActualFrameDuration'].value)
-            n_frames = int(rotation['NumberOfFramesInRotation'].value)
-            rotation_durations.append(frame_dur * n_frames)
-        # calculate the sum of all durations and convert it to seconds
-        series_duration = sum(rotation_durations)  / 1000
-        logging.debug('  {}: duration is based on rotation sequence'.format(series_row['SeriesInstanceUID']))
+        elif str(rotation_sequence) != 'nan':
+            logging.debug(rotation_sequence)
+            # extract the duration of each "rotation"
+            rotation_durations = []
+            for rotation in rotation_sequence:
+                frame_dur = int(rotation['ActualFrameDuration'].value)
+                n_frames = rotation.get('NumberOfFramesInRotation')
+                if n_frames is None:
+                    n_frames = len(rotation.get('RadialPosition'))
+                rotation_durations.append(frame_dur * int(n_frames))
+            # calculate the sum of all durations and convert it to seconds
+            series_duration = sum(rotation_durations)  / 1000
+            logging.debug('  {}: duration is based on rotation sequence'.format(series_row['SeriesInstanceUID']))
 
-    # if no "phase sequence vector" is present, use the actual frame duration
-    elif str(series_row['ActualFrameDuration']) != 'nan' and str(series_row['NumberOfFrames']) != 'nan':
-        # calculate the duration and convert it to seconds
-        series_duration = (int(series_row['ActualFrameDuration']) * series_row['NumberOfFrames']) / 1000
-        logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_row['SeriesInstanceUID']))
+        # if no "phase sequence vector" is present, use the actual frame duration
+        elif str(series_row['ActualFrameDuration']) != 'nan' and str(series_row['NumberOfFrames']) != 'nan':
+            # calculate the duration and convert it to seconds
+            series_duration = (int(series_row['ActualFrameDuration']) * series_row['NumberOfFrames']) / 1000
+            logging.debug('  {}: duration is based on ActualFrameDuration'.format(series_row['SeriesInstanceUID']))
+
+    except Exception as e:
+        logging.error('Error while getting end time for IPP {}, SUID {}'
+            .format(series_row[['PatientID', 'SeriesInstanceUID']]))
+        logging.error("-"*60)
+        logging.error(e, exc_info=True)
+        logging.error("-"*60)
 
     # if a duration could *not* be extracted
     if series_duration is None:
-        logging.error('  ERROR for {}: no series duration found'.format(series_row['SeriesInstanceUID']))
+        logging.error('  ERROR IPP {}, SUID {}: no series duration found'
+            .format(series_row[['PatientID', 'SeriesInstanceUID']]))
         return
 
     # if a duration info could be extracted, calculate the duration from the last instance's
@@ -558,14 +583,6 @@ def get_NM_series_end_time(series_row):
     end_time_str = end_time.strftime('%H%M%S')
 
     return end_time_str
-
-    df_series = df_series.drop(columns=['Machine', 'Start Time', 'End Time'], errors='ignore')
-    # restore a "fresh" copy of the saved data
-    df_info = df_info_save.copy()
-    # create masks for each modality
-    pt, ct, nm = [df_info['Modality'] == modality for modality in ['PT', 'CT', 'NM']]
-    # clean up the start times
-    df_info.loc[:, 'AcquisitionTime'] = df_info.loc[:, 'AcquisitionTime'].apply(lambda t: str(t).split('.')[0])
 
 def create_dataset_from_dataframe_row(df_row, qlevel, incl=[], excl=[], add_instance_number_filter=False):
     """
@@ -745,6 +762,7 @@ def download_data_dcm4che(config, query_dicts):
 
         # for each query, send a C-MOVE query
         logging.debug('Launching {} queries'.format(len(query_dicts)))
+        movescu_start_time = dt.now()
         for query_dict in query_dicts:
 
             # tansform the dictionnary to a list of filtering parameters
@@ -764,6 +782,10 @@ def download_data_dcm4che(config, query_dicts):
         while any([movescu_process.poll() is None for movescu_process in movescu_processes]):
             logging.debug('Waiting for C-MOVE to happen')
             time.sleep(1)
+            elapsed_time = (dt.now() - movescu_start_time).seconds
+            if elapsed_time > config['retrieve'].getint('movescu_timeout'):
+                logging.warning('Responses timeout (elapsed: {} seconds)'.format(elapsed_time))
+                break
 
     # catch errors
     except Exception as e:
