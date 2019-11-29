@@ -117,7 +117,8 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         df_series_no_info = df_series[
             (df_series['Start Time'].isnull())
             | (df_series['End Time'].isnull())
-            | (df_series['Machine'] == '')].copy()
+            | (df_series['Machine'] == '')
+            | (df_series['Machine'].isnull())].copy()
         # process the series that need info as batches
         for i_series in range(0, len(df_series_no_info), n_series_per_batch):
             i_batch_start = i_series
@@ -132,7 +133,8 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
             df_series_fetched_no_info = df_series_fetched[
                 (df_series_fetched['Start Time'].isnull())
                 | (df_series_fetched['End Time'].isnull())
-                | (df_series_fetched['Machine'] == '')]
+                | (df_series_fetched['Machine'] == '')
+                | (df_series_fetched['Machine'].isnull())]
             # exclude (from the fetched series DataFrame) all series that do not have info
             df_series_with_info = df_series_fetched.loc[
                 ~df_series_fetched.index.isin(df_series_fetched_no_info.index), :]
@@ -142,6 +144,8 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
             df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
             df_series = df_series.drop_duplicates('Series Instance UID')
 
+    # remove all duplicates
+    df_series = df_series.drop_duplicates('Series Instance UID')
     # get all series that have something wrong/missing
     df_series_failed = df_series_fetched_no_info.copy()
     # exclude (from the main DataFrame) all series that failed
