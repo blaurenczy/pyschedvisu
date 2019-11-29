@@ -146,8 +146,15 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
     # remove all duplicates
     df_series = df_series.drop_duplicates('Series Instance UID')
-    # get all series that have something wrong/missing
-    df_series_failed = df_series_fetched_no_info.copy()
+    # get all series that have something wrong/missing from the series
+    df_series_failed = df_series[
+        (df_series['Start Time'].isnull())
+        | (df_series['End Time'].isnull())
+        | (df_series['Machine'] == '')
+        | (df_series['Machine'].isnull())
+        | (df_series['Institution Name'] == '')
+        | (df_series['Institution Name'] == 'NONE')
+        | (df_series['Institution Name'].isnull())]
     # exclude (from the main DataFrame) all series that failed
     df_series = df_series.loc[~df_series.index.isin(df_series_failed.index), :]
     logging.warning('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
