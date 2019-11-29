@@ -101,6 +101,11 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         # get all series for the found studies
         df_series = find_series_for_studies(config, df_studies)
 
+    # check if there are any series found, otherwise abort
+    if df_series is None or len(df_series) <= 0:
+        logging.warning('Warning at {}: no series found'.format(day_str))
+        return
+
     # try to fetch the info for the series in an iterative way
     i_try = 0
     n_retry = config['retrieve'].getint('n_retry_per_day')
@@ -274,7 +279,7 @@ def find_series_for_studies(config, df_studies):
 
     # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
     n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
-    if n_max_series_per_day != -1: df_series = df_series.iloc[0 : n_max_series_per_day, :]
+    if n_max_series_per_day != -1: df_series = df_series.iloc[0 : min(len(df_series), n_max_series_per_day), :]
 
     logging.warning('Found {} series in total for the {} studies'.format(len(df_series), len(df_studies)))
 
@@ -564,7 +569,7 @@ def get_NM_series_end_time(series_row):
 
     except Exception as e:
         logging.error('Error while getting end time for IPP {}, SUID {}'
-            .format(series_row[['PatientID', 'SeriesInstanceUID']]))
+            .format(series_row['PatientID'], series_row['SeriesInstanceUID']))
         logging.error("-"*60)
         logging.error(e, exc_info=True)
         logging.error("-"*60)
@@ -572,7 +577,7 @@ def get_NM_series_end_time(series_row):
     # if a duration could *not* be extracted
     if series_duration is None:
         logging.error('  ERROR IPP {}, SUID {}: no series duration found'
-            .format(series_row[['PatientID', 'SeriesInstanceUID']]))
+            .format(series_row['PatientID'], series_row['SeriesInstanceUID']))
         return
 
     # if a duration info could be extracted, calculate the duration from the last instance's
