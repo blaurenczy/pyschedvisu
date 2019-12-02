@@ -10,7 +10,7 @@ from datetime import datetime as dt
 from configparser import ConfigParser
 
 from scripts.retrieve_data import retrieve_and_save_data_from_PACS
-from scripts.extract_data import extract_transform_and_save_data_from_files
+from scripts.extract_data import load_transform_and_save_data_from_files
 from scripts.create_report import create_report
 
 def run():
@@ -33,8 +33,8 @@ def run():
         # run the workflow using the date range, settings, parameters, etc. found in the config
         logging.warning("Starting SchedVisu workflow")
         retrieve_and_save_data_from_PACS(config)
-        df_series = extract_transform_and_save_data_from_files(config)
-        # create_report(config)
+        load_transform_and_save_data_from_files(config)
+        create_report(config)
         logging.warning("Finished running SchedVisu workflow")
 
     except Exception as e:

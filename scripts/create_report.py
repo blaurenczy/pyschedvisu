@@ -23,8 +23,17 @@ def create_report(config):
         None
     """
 
-    logging.info("Reading in database")
-    df = pd.read_csv('database.csv')
+    # create the path where the data for the current config would be stored
+    day_period_str = '{}_{}'.format(config['main']['start_date'], config['main']['end_date']).replace('-', '')
+    studies_save_path = 'data/studies/studies_{}.pkl'.format(day_period_str)
+
+    # check if the data can be loaded
+    if ~os.path.isfile(studies_save_path):
+        logging.error('Reading {}: Could not find save file at "{}", aborting.'.format(studies_save_path))
+        return
+
+    logging.info("Reading in studies")
+    df = pd.read_pickle(studies_save_path)
 
     logging.info("Initializing the canvas of the PDF file")
     c = canvas.Canvas('output/schedvisu.pdf', pagesize=A4)

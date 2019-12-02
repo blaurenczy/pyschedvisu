@@ -74,7 +74,7 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
         # if some failed series exist and they must be processed
         failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
-        if os.path.isfile(failed_day_save_file_path) and config['retrieve'].getboolean('recover_failed'):
+        if os.path.isfile(failed_day_save_file_path) and config['retrieve'].getboolean('debug_recover_failed'):
             logging.warning('Processing   {}: save file found at "{}", but failed series exists and must be processed'\
                 .format(day_str, day_save_file_path))
             # load both series (valid and failed)
