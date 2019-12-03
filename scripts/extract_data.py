@@ -45,10 +45,12 @@ def load_transform_and_save_data_from_files(config):
             'Start Time': 'min',
             'End Time': 'max',
             'Study Description': lambda x: '/'.join(set(x)),
+            'Patient ID': lambda x: '/'.join(set(x)),
             'Machine Group': lambda x: '/'.join(set(x)),
             'Modality': lambda x: '/'.join(set(x)),
             'Protocol Name': lambda x: '/'.join(set(x))
-        }).sort_values(['Series Date', 'Machine Group', 'Start Time', 'SUID'])
+        }).sort_values(['Series Date', 'Start Time', 'Machine Group', 'SUID'])\
+        .rename(columns={'Series Date': 'Date'})
 
         # save it to the studies file
         df_studies.to_pickle(studies_save_path)

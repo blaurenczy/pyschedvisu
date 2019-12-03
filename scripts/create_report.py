@@ -2,15 +2,12 @@
 
 import logging
 import pandas as pd
+import os
 import matplotlib.pyplot as plt
+from matplotlib.cbook import get_sample_data
 from datetime import date, timedelta
-from io import BytesIO
-from reportlab.pdfgen import canvas
-from reportlab.graphics import renderPDF
-from reportlab.platypus import Table, TableStyle
-from reportlab.lib import colors
-from svglib.svglib import svg2rlg
-from reportlab.lib.pagesizes import A4
+from datetime import datetime as dt
+
 
 
 def create_report(config):
@@ -28,74 +25,80 @@ def create_report(config):
     studies_save_path = 'data/studies/studies_{}.pkl'.format(day_period_str)
 
     # check if the data can be loaded
-    if ~os.path.isfile(studies_save_path):
-        logging.error('Reading {}: Could not find save file at "{}", aborting.'.format(studies_save_path))
+    if not os.path.isfile(studies_save_path):
+        logging.error('Reading {}: Could not find save file at "{}", aborting.'
+            .format(day_period_str, studies_save_path))
         return
 
     logging.info("Reading in studies")
     df = pd.read_pickle(studies_save_path)
 
-    logging.info("Initializing the canvas of the PDF file")
-    c = canvas.Canvas('output/schedvisu.pdf', pagesize=A4)
-    cw, ch = A4
+    # exclude some machines and do some grouping up
+    df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
+    df = df[df['Machine'] != 'mixed cases']
 
-    # Translate origin to upper left corner, to make it easier to use the coordinates from the GIMP draft.
-    #   However, all Y coordinates will need to be negative.
-    c.translate(0, ch)
+    # go through each machine
+    for machine in set(df['Machine']):
 
-    # # DEBUG
-    # logging.info("Drawing report background")
-    # c.drawImage('images/RapportHebdomadaire.png', 0, -ch, cw, ch)
+        # create a matplotlib figure with the right aspect ratio
+        fig = plt.figure(figsize=[8.27, 11.69])
 
-    # create the report, section by section
-    create_header(c, config)
-    create_notes(c, config)
-    create_schedule(c, config)
-    create_daily_table(c, config)
-    create_violin(c, config)
-    create_stat_table(c, config)
+        # create the report, section by section
+        create_header(config, fig, machine)
+        #create_notes(c, config)
+        #create_schedule(c, config)
+        #create_daily_table(c, config)
+        #create_violin(c, config)
+        #create_stat_table(c, config)
 
-    logging.info("Saving PDF file")
-    c.showPage()
-    c.save()
+        logging.info("Saving PDF file")
+        fig.savefig('output_{}.pdf'.format(machine.lower().replace(' ', '')), orientation='portrait',
+            papertype='a4', format='pdf')
 
-    return
-
-def create_header(c, config):
+def create_header(config, fig, machine):
     """
     Create the header section with the logo, the header text, the dates, etc.
     Args:
-        c (Canvas):     the canvas object for drawing
         config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        fig (Figure):   the matplotlib figure object for drawing
+        machine (str):  a string specifying the currently processed machine
     Returns:
         None
     """
 
     logging.info("Creating header section")
 
+    start_day = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
+    end_day = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
+
     # analyse the week numbers
-    week_numbers = list(set([config['start_date'].strftime('%V'), config['end_date'].strftime('%V')]))
+    week_numbers = list(set([start_day.strftime('%V'), end_day.strftime('%V')]))
     week_numbers_str = '-'.join(week_numbers)
     report_type = get_report_type(week_numbers)
     logging.info(f"Header content: {report_type}, {week_numbers_str}")
 
     # draw the header text with dates, etc.
-    c.setStrokeColorRGB(0, 0, 0)
-    c.setFont("Times-Roman", 20)
-    c.drawString(370, -25, "Rapport {}".format(report_type))
-    c.setFont("Times-Bold", 30)
-    c.drawString(370, -55, "Semaine {}".format(week_numbers_str))
-    c.setFont("Times-Roman", 25)
-    c.drawString(375, -85, "du {}".format(config['start_date'].strftime("%d/%m/%Y")))
-    c.drawString(375, -115, "au {}".format(config['end_date'].strftime("%d/%m/%Y")))
+    plt.rcParams["font.family"] = "monospace"
+    fig.text(0.62, 0.97, "Rapport {}".format(report_type), fontsize=15)
+    fig.text(0.62, 0.93, "Semaine{} {}".format('s' if len(week_numbers) > 1 else '', week_numbers_str), fontsize=25, fontweight='bold')
+    fig.text(0.63, 0.89, "du {}".format(start_day.strftime("%d/%m/%Y")), fontsize=20)
+    fig.text(0.63, 0.86, "au {}".format(end_day.strftime("%d/%m/%Y")), fontsize=20)
 
     # machine name
-    c.setFont("Times-Roman", 30)
-    c.drawString(185, -145, config['machine_name'])
-    c.drawImage('images/{}.png'.format(config['machine_name'].lower().replace(' ', '')), 65, -160, 115, 55)
+    fig.text(0.01, 0.82, 'Machine: ' + machine, fontsize=20)
 
-    # draw the logo
-    c.drawImage('images/logo_transp.png', 10, -110, 345, 105, mask='auto')
+    im_machine_path = '{}/images/{}.png'.format(os.getcwd(), machine.lower().replace(' ', '')).replace('/', '\\')
+    im_machine = plt.imread(get_sample_data(im_machine_path))
+    im_machine_ax = fig.add_axes([0.40, 0.81, 0.22, 0.05], anchor='NE', zorder=-1)
+    im_machine_ax.imshow(im_machine)
+    im_machine_ax.axis('off')
+
+    ## draw the logo
+    im_logo_path = '{}/images/logo_transp.png'.format(os.getcwd()).replace('/', '\\')
+    im_log = plt.imread(get_sample_data(im_logo_path))
+    im_logo_ax = fig.add_axes([0.00, 0.86, 0.60, 0.13], anchor='NE', zorder=-1)
+    im_logo_ax.imshow(im_log)
+    im_logo_ax.axis('off')
 
 
 def get_report_type(week_numbers):
