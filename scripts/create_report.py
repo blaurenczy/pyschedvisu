@@ -9,7 +9,7 @@ from matplotlib.patches import FancyBboxPatch
 from random import random
 from datetime import date, timedelta
 from datetime import datetime as dt
-from scripts.main import get_day_range
+import scripts.main
 
 def create_report(config):
     """
@@ -49,7 +49,7 @@ def create_report(config):
         create_header(config, fig, machine)
         #create_notes(config, fig)
         create_schedule(config, fig, machine, df)
-        #create_daily_table(c, config)
+        create_daily_table(config, fig, machine, df)
         #create_violin(c, config)
         #create_stat_table(c, config)
 
@@ -71,7 +71,7 @@ def create_header(config, fig, machine):
     logging.info("Creating header section")
 
     # analyse the week numbers
-    start_date, end_date, _ = get_day_range(config)
+    start_date, end_date, _ = scripts.main.get_day_range(config)
     week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
     week_numbers_str = '-'.join(week_numbers)
     report_type = get_report_type(week_numbers)
@@ -173,7 +173,7 @@ def create_schedule_plot(config, fig, machine, df):
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = get_day_range(config)
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
     # remove the Sundays from the days range
     days_range = [d for d in days_range if d.weekday() != 6]
 
@@ -216,13 +216,12 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
 
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = get_day_range(config)
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
     # remove the Sundays from the days range
     days_range = [d for d in days_range if d.weekday() != 6]
     # initialize some variables related to the dates
     day_str = day.strftime('%Y%m%d')
     i_day = days_range.index(day) + 1
-
 
     # get the data for the current day and machine
     df_day = df.query('Date == "{}" & Machine == "{}"'.format(day_str, machine))
@@ -277,7 +276,7 @@ def create_schedule_distribution_plot(config, fig, machine, df):
 
     # define some parameters for the distribution
     FMT = '%H%M%S'
-    start_date, end_date, _ = get_day_range(config)
+    start_date, end_date, _ = scripts.main.get_day_range(config)
     start_hour = '{:02d}3000'.format(config['draw'].getint('sched_start_hour') - 1)
     end_hour = '{:02d}3000'.format(config['draw'].getint('sched_end_hour'))
     # create a list of times which will be used as time points to build the distribution
@@ -316,41 +315,78 @@ def create_schedule_distribution_plot(config, fig, machine, df):
     plt.xticks([])
     plt.yticks([])
 
-def create_daily_table(c, config):
+def create_daily_table(config, fig, machine, df):
     """
     Create the daily table section with the statistics for each day.
     Args:
-        c (Canvas):     the canvas object for drawing
         config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+        fig (Figure):   the matplotlib figure object for drawing
+        machine (str):  a string specifying the currently processed machine
+        df (DataFrame): a pandas DataFrame containing the studies to plot
     Returns:
         None
     """
 
     logging.info("Creating daily table section")
 
-    data = [
-        ['19', '19', '19', '19', '19'],
-        ['18', '19', '17', '20', '19'],
-        ['95%', '100%', '89%', '105%', '100%'],
-        ['00', '01', '02', '00', '00']
-    ]
+    # add new axes
+    table_ax = fig.add_axes([0.06, 0.31, 0.80, 0.12], anchor='NE')
+    table_ax.axis('off')
 
-    t = Table(data, colWidths=[97] * len(data[0]))
+    # get the starting and ending dates, and the days range from the config
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    # remove the Sundays from the days range
+    days_range = [d for d in days_range if d.weekday() != 6]
+    # initialize the variable holding all the information to be displayed in the table
+    data = [[],[],[]]
+    # go through each day
+    for day in days_range:
+        # get the data and calculate values for the current day
+        df_day = df.query('Date == "{}" & Machine == "{}"'.format(day.strftime('%Y%m%d'), machine))
+        n_max_studies = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', ''))
+        n_studies = len(df_day)
+        # skip the weekends
+        if day.weekday() in [5, 6]:
+            [data[i].append('') for i in range(3)]
+            continue
+        # insert the values into the data table
+        data[0].append(n_max_studies)
+        data[1].append(n_studies)
+        data[2].append('{:3d}%'.format(int(100 * n_studies / n_max_studies)))
 
-    table_style = TableStyle([
-        ('TEXTCOLOR',(0,0),(-1,-1),colors.black),
-        ('VALIGN',(0,0),(-1,-1),'TOP'),
-        ('LINEBELOW',(0,0),(-1,-1),1,colors.black),
-        ('BOX',(0,0),(-1,-1),1,colors.black),
-        ('BOX',(0,0),(0,-1),1,colors.black)
-    ])
-    table_style.add('BACKGROUND',(0,0),(1,0),colors.lightblue)
-    table_style.add('BACKGROUND',(0,1),(-1,-1),colors.white)
-    t.setStyle(table_style)
+    table = plt.table(cellText=data, cellLoc='center', loc='center')
+    table.set_fontsize(9)
+    table.auto_set_font_size(False)
 
+    # add new axes for the row headers
+    table_header_ax = fig.add_axes([0.01, 0.31, 0.05, 0.12], anchor='NE')
+    table_header_ax.axis('off')
+    table_header = plt.table(cellText=[['Slot'], ['Exam.'], ['Util.']], cellLoc='center', loc='center')
+    table_header.set_fontsize(9)
+    table_header.auto_set_font_size(False)
 
-    t.wrapOn(c, 485, 65)
-    t.drawOn(c, 15, -585)
+    # calculate summary values
+    n_cols = len(data[0])
+    tot_slots = sum([data[0][i_col] for i_col in range(n_cols) if isinstance(data[0][i_col], int)])
+    tot_n_studies = sum([data[1][i_col] for i_col in range(n_cols) if isinstance(data[1][i_col], int)])
+    summ_data = [
+        [tot_slots, '{:.1f}'.format(tot_slots / n_cols)],
+        [tot_n_studies, '{:.1f}'.format(tot_n_studies / n_cols)],
+        ['', '{:.1f}'.format(100 * tot_n_studies / tot_slots)]]
+
+    # add new axes for the summary values
+    table_summ_ax = fig.add_axes([0.86, 0.31, 0.12, 0.12], anchor='NE')
+    table_summ_ax.axis('off')
+    table_summ = plt.table(cellText=summ_data, cellLoc='center', loc='center')
+    table_summ.set_fontsize(10)
+    table_summ.auto_set_font_size(False)
+
+    # add new axes for the summary values
+    table_summ_header_ax = fig.add_axes([0.86, 0.389, 0.12, 0.02], anchor='NE')
+    table_summ_header_ax.axis('off')
+    table_summ_header = plt.table(cellText=[['Total', 'Moyen']], cellLoc='center', loc='center')
+    table_summ_header.set_fontsize(11)
+    table_summ_header.auto_set_font_size(False)
 
 
 def create_violin(c, config):

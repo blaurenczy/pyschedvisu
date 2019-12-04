@@ -6,7 +6,7 @@ import re
 import pandas as pd
 from datetime import timedelta
 from datetime import datetime as dt
-from scripts.main import get_day_range
+import scripts.main
 
 def load_transform_and_save_data_from_files(config):
     """
@@ -70,7 +70,7 @@ def load_data_from_files(config):
     logging.info("Loading data from files")
 
     # get the date range from the config
-    start_date, end_date, days_range = get_day_range(config)
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
     # create the variable holding all the series for all days
     df_series = None
 
