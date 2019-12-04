@@ -6,6 +6,7 @@ This is the master script running all the steps.
 
 import logging
 import os
+import pandas as pd
 from datetime import datetime as dt
 from configparser import ConfigParser
 
@@ -96,6 +97,23 @@ def load_config():
     logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'].upper())
 
     return config
+
+def get_day_range(config):
+    """
+    Returns the starting day, the ending day and the days range specified by the config.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+    Returns:
+        start_date (datetime):  the starting day specified by the config
+        end_date (datetime):    the starting day specified by the config
+        days_range (daterange): the pandas daterange going from the starting to then ending day
+    """
+
+    start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
+    end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
+    days_range = pd.date_range(start_date, end_date)
+
+    return start_date, end_date, days_range
 
 if __name__ == '__main__':
     run()

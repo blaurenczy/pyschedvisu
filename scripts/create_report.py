@@ -5,10 +5,11 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 from matplotlib.cbook import get_sample_data
+from matplotlib.patches import FancyBboxPatch
+from random import random
 from datetime import date, timedelta
 from datetime import datetime as dt
-
-
+from scripts.main import get_day_range
 
 def create_report(config):
     """
@@ -38,15 +39,16 @@ def create_report(config):
     df = df[df['Machine'] != 'mixed cases']
 
     # go through each machine
-    for machine in set(df['Machine']):
+    #for machine in set(df['Machine']):
+    for machine in ['Discovery']:
 
         # create a matplotlib figure with the right aspect ratio
         fig = plt.figure(figsize=[8.27, 11.69])
 
         # create the report, section by section
         create_header(config, fig, machine)
-        #create_notes(c, config)
-        #create_schedule(c, config)
+        #create_notes(config, fig)
+        create_schedule(config, fig, machine, df)
         #create_daily_table(c, config)
         #create_violin(c, config)
         #create_stat_table(c, config)
@@ -59,7 +61,7 @@ def create_header(config, fig, machine):
     """
     Create the header section with the logo, the header text, the dates, etc.
     Args:
-        config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
         fig (Figure):   the matplotlib figure object for drawing
         machine (str):  a string specifying the currently processed machine
     Returns:
@@ -68,11 +70,9 @@ def create_header(config, fig, machine):
 
     logging.info("Creating header section")
 
-    start_day = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
-    end_day = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
-
     # analyse the week numbers
-    week_numbers = list(set([start_day.strftime('%V'), end_day.strftime('%V')]))
+    start_date, end_date, _ = get_day_range(config)
+    week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
     week_numbers_str = '-'.join(week_numbers)
     report_type = get_report_type(week_numbers)
     logging.info(f"Header content: {report_type}, {week_numbers_str}")
@@ -81,22 +81,22 @@ def create_header(config, fig, machine):
     plt.rcParams["font.family"] = "monospace"
     fig.text(0.62, 0.97, "Rapport {}".format(report_type), fontsize=15)
     fig.text(0.62, 0.93, "Semaine{} {}".format('s' if len(week_numbers) > 1 else '', week_numbers_str), fontsize=25, fontweight='bold')
-    fig.text(0.63, 0.89, "du {}".format(start_day.strftime("%d/%m/%Y")), fontsize=20)
-    fig.text(0.63, 0.86, "au {}".format(end_day.strftime("%d/%m/%Y")), fontsize=20)
+    fig.text(0.63, 0.89, "du {}".format(start_date.strftime("%d/%m/%Y")), fontsize=20)
+    fig.text(0.63, 0.86, "au {}".format(end_date.strftime("%d/%m/%Y")), fontsize=20)
 
     # machine name
-    fig.text(0.01, 0.82, 'Machine: ' + machine, fontsize=20)
+    fig.text(0.01, 0.83, 'Machine: ' + machine, fontsize=20)
 
     im_machine_path = '{}/images/{}.png'.format(os.getcwd(), machine.lower().replace(' ', '')).replace('/', '\\')
     im_machine = plt.imread(get_sample_data(im_machine_path))
-    im_machine_ax = fig.add_axes([0.40, 0.81, 0.22, 0.05], anchor='NE', zorder=-1)
+    im_machine_ax = fig.add_axes([0.40, 0.81, 0.22, 0.05], anchor='NE')
     im_machine_ax.imshow(im_machine)
     im_machine_ax.axis('off')
 
     ## draw the logo
     im_logo_path = '{}/images/logo_transp.png'.format(os.getcwd()).replace('/', '\\')
     im_log = plt.imread(get_sample_data(im_logo_path))
-    im_logo_ax = fig.add_axes([0.00, 0.86, 0.60, 0.13], anchor='NE', zorder=-1)
+    im_logo_ax = fig.add_axes([0.00, 0.86, 0.60, 0.13], anchor='NE')
     im_logo_ax.imshow(im_log)
     im_logo_ax.axis('off')
 
@@ -122,86 +122,206 @@ def get_report_type(week_numbers):
     return report_type
 
 
-def create_notes(c, config):
+def create_notes(config, fig):
     """
     Create the notes section.
     Args:
-        c (Canvas):     the canvas object for drawing
-        config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+        fig (Figure):   the matplotlib figure object for drawing
     Returns:
         None
     """
 
     logging.info("Creating notes section")
 
-        # draw the notes
-    c.setStrokeColorRGB(0, 0, 0)
-    c.setFont("Times-Italic", 15)
-    c.drawString(15, -600, "Note\u00b9: le nombre de 'slot' est calculé sur la base de la " +\
-        "moyenne des {n_months_average_for_slot_number} derniers mois".format(**config))
-    c.drawString(15, -615, "Note\u00b2: les trous sont définis comme des espaces d'au " +\
-        "moins {n_minutes_for_gap} minutes sans examens".format(**config))
+    # draw the notes
+    #c.drawString(15, -600, "Note\u00b9: le nombre de 'slot' est calculé sur la base de la " +\
+    #    "moyenne des {n_months_average_for_slot_number} derniers mois".format(**config))
+    #c.drawString(15, -615, "Note\u00b2: les trous sont définis comme des espaces d'au " +\
+    #    "moins {n_minutes_for_gap} minutes sans examens".format(**config))
 
-
-def create_schedule(c, config):
+def create_schedule(config, fig, machine, df):
     """
     Create the schedule section with the plot for the schedule and the distribution.
     Args:
-        c (Canvas):     the canvas object for drawing
-        config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+        fig (Figure):   the matplotlib figure object for drawing
+        machine (str):  a string specifying the currently processed machine
+        df (DataFrame): a pandas DataFrame containing the studies to plot
     Returns:
         None
     """
 
-    logging.info("Creating schedule section")
+    logging.debug("Creating schedule section")
 
-    logging.info("Creating schedule plot")
-    # create the matplotlib figure with the right aspect ratio
-    fig = plt.figure(figsize=(4.9, 3.5))
-    plt.plot([1,2,3,4])
-    plt.ylabel('Some Numbers')
+    logging.debug("Creating schedule plot")
+    create_schedule_plot(config, fig, machine, df)
 
-    logging.info("Plotting schedule plot to canvas")
-    draw_plot_to_canvas(c, fig, [10, 510, 490, 350], 'red')
+    logging.debug("Creating distribution plot")
+    create_schedule_distribution_plot(config, fig, machine, df)
 
-    logging.info("Creating distribution plot")
-    # create the matplotlib figure with the right aspect ratio
-    fig = plt.figure(figsize=(0.8, 3.25))
-
-    logging.info("Plotting distribution plot to canvas")
-    draw_plot_to_canvas(c, fig, [510, 485, 80, 325], 'blue')
-
-
-def draw_plot_to_canvas(c, fig, pos, face_color=None):
+def create_schedule_plot(config, fig, machine, df):
     """
-    Create the schedule section with the plot for the schedule and the distribution.
+    Create the schedule plot for the schedule section.
     Args:
-        c (Canvas):         the canvas object for drawing
-        fig (Figure):       the matplotlib figure to be drawn
-        pos (list of int):  a list of [x, y, w, h] coorinates where to draw
-        face_color (str):   (optional) a string representing the background color for the figure
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+        fig (Figure):   the matplotlib figure object for drawing
+        machine (str):  a string specifying the currently processed machine
+        df (DataFrame): a pandas DataFrame containing the studies to plot
     Returns:
         None
     """
 
-    # save the matplotlib figure as SVG to BytesIO object
-    img_data = BytesIO()
-    fig.savefig(img_data, format='svg', facecolor=face_color)
-    # rewind the bytes array and convert to a reportlab Drawing object
-    img_data.seek(0)
-    drawing = svg2rlg(img_data)
-    # rescale the drawing to make sure it has the right pixel size
-    drawing.scale(pos[2] / drawing.width, pos[3] / drawing.height)
-    # draw the object to the canvas
-    renderPDF.draw(drawing, c, pos[0], -pos[1])
+    # get the starting and ending dates, and the days range from the config
+    start_date, end_date, days_range = get_day_range(config)
+    # remove the Sundays from the days range
+    days_range = [d for d in days_range if d.weekday() != 6]
 
+    # create the new axes
+    sched_ax = fig.add_axes([0.06, 0.42, 0.80, 0.39], anchor='NE')
+
+    # plot each day
+    for day in days_range:
+        plot_day_for_schedule_plot(config, sched_ax, machine, day, df)
+
+    # create the x ticks
+    days_xticks, days_xtick_labels = [], []
+    for day in days_range:
+        if day.weekday() in [5, 6]: continue
+        days_xticks.append(days_range.index(day) + 1)
+        days_xtick_labels.append(day.strftime('%d/%m'))
+
+    # set the ticks, labels and the limits of the plot
+    start_hour = config['draw'].getint('sched_start_hour')
+    end_hour = config['draw'].getint('sched_end_hour')
+    plt.xticks(days_xticks, days_xtick_labels)
+    plt.yticks(
+        ticks=range(start_hour, end_hour + 1),
+        labels=['{:02d}h'.format(i) for i in range(start_hour, end_hour + 1)])
+    plt.xlim((0.5, len(days_range) + 0.5))
+    plt.ylim((start_hour - 0.5, end_hour + 0.5))
+
+def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
+    """
+    Plot a single day in the schedule plot.
+    Args:
+        config (dict):      a dictionary holding all parameters for generating the report (dates, etc.)
+        sched_ax (Axes):    the matplotlib axes object for drawing
+        machine (str):      a string specifying the currently processed machine
+        day (datetime):     the currently processed day
+        df (DataFrame): a pandas DataFrame containing the studies to plot
+    Returns:
+        None
+    """
+
+
+    # get the starting and ending dates, and the days range from the config
+    start_date, end_date, days_range = get_day_range(config)
+    # remove the Sundays from the days range
+    days_range = [d for d in days_range if d.weekday() != 6]
+    # initialize some variables related to the dates
+    day_str = day.strftime('%Y%m%d')
+    i_day = days_range.index(day) + 1
+
+
+    # get the data for the current day and machine
+    df_day = df.query('Date == "{}" & Machine == "{}"'.format(day_str, machine))
+    logging.debug('Found {} studies in day {} (day number: {})'.format(len(df_day), day_str, i_day))
+    # abort if no data
+    if len(df_day) == 0: return
+
+    # go through each study found for this day
+    i_study = 0
+    for i_study in range(len(df_day)):
+        study = df_day.iloc[i_study, :]
+
+        # get the start time, end time and duration as hours with decimals
+        start = pd.to_datetime(study['Start Time'], format='%H%M%S')
+        end = pd.to_datetime(study['End Time'], format='%H%M%S')
+        start_hour = start.hour + start.minute / 60 + start.second / 3600
+        end_hour = end.hour + end.minute / 60 + end.second / 3600
+        duration_hours = end_hour - start_hour
+
+        # if the duration is negative
+        if duration_hours <= 0:
+            logging.warning('Problem with study {} on day {}: duration is 0 or negative: {}'
+                .format(study.name, day_str, duration_hours))
+            continue
+
+        # get the start and stop times rounded to the minute
+        logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}'
+            .format(day_str, start_hour, end_hour, duration_hours))
+
+        # get the coordinates where the rounded rectangle for this study should be plotted
+        box_w = config['draw'].getfloat('study_box_w')
+        x_shift = config['draw'].getfloat('study_x_shift')
+        x = i_day - (box_w * 0.5) + (x_shift * (-1 if (i_study % 2 == 0) else 1))
+        y, w, h = start_hour, box_w, duration_hours
+
+        # create the shape and plot it
+        rounded_rect = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=-0.0040,rounding_size=0.155",
+            fc="red", ec='black', mutation_aspect=0.4)
+        sched_ax.add_patch(rounded_rect)
+
+def create_schedule_distribution_plot(config, fig, machine, df):
+    """
+    Create the schedule's distribution plot for the schedule section.
+    Args:
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+        fig (Figure):   the matplotlib figure object for drawing
+        machine (str):  a string specifying the currently processed machine
+        df (DataFrame): a pandas DataFrame containing the studies to plot
+    Returns:
+        None
+    """
+
+    # define some parameters for the distribution
+    FMT = '%H%M%S'
+    start_date, end_date, _ = get_day_range(config)
+    start_hour = '{:02d}3000'.format(config['draw'].getint('sched_start_hour') - 1)
+    end_hour = '{:02d}3000'.format(config['draw'].getint('sched_end_hour'))
+    # create a list of times which will be used as time points to build the distribution
+    time_range = pd.date_range(dt.strptime(start_hour, FMT), dt.strptime(end_hour, FMT),
+        freq=config['draw']['sched_distr_freq'])
+
+    logging.debug("Calculating distribution")
+    # get all the studies for the selected time period
+    df_period = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}"'
+        .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'), machine))
+    # initialize the DataFrame storing the counts for each time point
+    df_counts = pd.DataFrame([0]*len(time_range), index=time_range, columns=['count'])
+
+    # loop through each study
+    for ind in df_period.index:
+        # get the start and end time of each study
+        start = dt.strptime(df_period.loc[ind, 'Start Time'], FMT)
+        end = dt.strptime(df_period.loc[ind, 'End Time'], FMT)
+        # go through each time point
+        for t in time_range:
+            # check where the time point is within the study's time range. If yes, increment the counter
+            if start <= t <= end: df_counts.loc[t, 'count'] += 1
+    # resample the distribution with a lower frequency to smooth the curve
+    df_counts_resample = df_counts.resample(config['draw']['sched_distr_resample_freq']).mean()
+
+    # plot the distribution
+    logging.debug("Plotting the distribution")
+    # add new axes
+    distr_ax = fig.add_axes([0.86, 0.42, 0.12, 0.39], anchor='NE')
+    # create new y values based on the time points
+    counts_y_values = [t.hour + t.minute / 60 + t.second / 3600 for t in df_counts_resample.index]
+    # plot the curve
+    plt.plot(df_counts_resample['count'], counts_y_values, color='red')
+    # set some limits and remove the ticks
+    plt.ylim((7.5, 19.5))
+    plt.xticks([])
+    plt.yticks([])
 
 def create_daily_table(c, config):
     """
     Create the daily table section with the statistics for each day.
     Args:
         c (Canvas):     the canvas object for drawing
-        config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
     Returns:
         None
     """
@@ -238,7 +358,7 @@ def create_violin(c, config):
     Create the violint plot section with the data for each examination type.
     Args:
         c (Canvas):     the canvas object for drawing
-        config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
     Returns:
         None
     """
@@ -260,7 +380,7 @@ def create_stat_table(c, config):
     Create the statistics table section with the statistics for each examination type.
     Args:
         c (Canvas):     the canvas object for drawing
-        config (dict):  a dictionary holding all parameters for generating the report (dates, machine name, etc.)
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
     Returns:
         None
     """

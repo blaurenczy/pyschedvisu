@@ -25,6 +25,8 @@ from pynetdicom.sop_class import (
     PatientRootQueryRetrieveInformationModelMove
 )
 
+from scripts.main import get_day_range
+
 def retrieve_and_save_data_from_PACS(config):
     """
     Retrieve and save the relevant series from the PACS for all days specified by the config.
@@ -37,9 +39,7 @@ def retrieve_and_save_data_from_PACS(config):
     logging.info("Retrieving data from PACS")
 
     # get the date range from the config
-    start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
-    end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
-    days_range = pd.date_range(start_date, end_date)
+    start_date, end_date, days_range = get_day_range(config)
 
     # go through the date range day by day
     for day in days_range:
