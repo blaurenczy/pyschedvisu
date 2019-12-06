@@ -10,6 +10,7 @@ from random import random
 from datetime import date, timedelta
 from datetime import datetime as dt
 import scripts.main
+import scripts.extract_data
 
 def create_report(config):
     """
@@ -21,26 +22,17 @@ def create_report(config):
         None
     """
 
-    # create the path where the data for the current config would be stored
-    day_period_str = '{}_{}'.format(config['main']['start_date'], config['main']['end_date']).replace('-', '')
-    studies_save_path = 'data/studies/studies_{}.pkl'.format(day_period_str)
-
-    # check if the data can be loaded
-    if not os.path.isfile(studies_save_path):
-        logging.error('Reading {}: Could not find save file at "{}", aborting.'
-            .format(day_period_str, studies_save_path))
-        return
-
+    # load the relevant studies
     logging.info("Reading in studies")
-    df = pd.read_pickle(studies_save_path)
+    df = scripts.extract_data.load_transform_and_save_data_from_files(config)
 
     # exclude some machines and do some grouping up
     df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
     df = df[df['Machine'] != 'mixed cases']
 
     # go through each machine
-    for machine in set(df['Machine']):
-    #for machine in ['PET Siemens']:
+    #for machine in set(df['Machine']):
+    for machine in ['PET Siemens']:
 
         # create a matplotlib figure with the right aspect ratio
         fig = plt.figure(figsize=[8.27, 11.69])
@@ -271,8 +263,8 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
         sched_ax.add_patch(rounded_rect)
 
         # DEBUG show information string
-        plt.text(x + w * 0.1, y + 0.1 * h, '{}: {} - {}: {:.2f}h'
-            .format(*study[['Patient ID', 'Start Time', 'End Time']], duration_hours))
+        #plt.text(x + w * 0.1, y + 0.1 * h, '{}: {} - {}: {:.2f}h'
+        #    .format(*study[['Patient ID', 'Start Time', 'End Time']], duration_hours))
 
 def create_schedule_distribution_plot(config, fig, machine, df):
     """
@@ -304,6 +296,11 @@ def create_schedule_distribution_plot(config, fig, machine, df):
 
     # loop through each study
     for ind in df_period.index:
+        # check if we have some leftover nans
+        if str(df_period.loc[ind, 'Start Time']) == 'nan' or str(df_period.loc[ind, 'End Time']) == 'nan':
+            logging.warning("Found some NaNs for study IPP{} on day {}: start = {}, end = {}"
+                .format(*df_period.loc[ind, ['Patient ID', 'Date', 'Start Time', 'End Time']]))
+            continue
         # get the start and end time of each study
         start = dt.strptime(df_period.loc[ind, 'Start Time'], FMT)
         end = dt.strptime(df_period.loc[ind, 'End Time'], FMT)

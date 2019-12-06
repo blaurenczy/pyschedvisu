@@ -5,6 +5,8 @@ import os
 import re
 import pandas as pd
 import numpy as np
+import holidays
+from copy import deepcopy
 from datetime import timedelta
 from datetime import datetime as dt
 import scripts.main
@@ -15,49 +17,81 @@ def load_transform_and_save_data_from_files(config):
     Args:
         config (dict): a dictionary holding all the necessary parameters
     Returns:
-        df_series (DataFrame): the pandas DataFrame holding the series
+        df_studies (DataFrame): the pandas DataFrame holding the studies
     """
 
-    # create the path where the data for the current config would be stored
-    day_period_str = '{}_{}'.format(config['main']['start_date'], config['main']['end_date']).replace('-', '')
-    studies_save_path = 'data/studies/studies_{}.pkl'.format(day_period_str)
+    # get the date range from the config
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    # initialize the save path's location
+    studies_save_path = config['extract']['studies_db_save_path']
+    # initialize the studies DataFrame and its days content to empty, in case nothing has been done yet
+    df_studies = None
+    already_processed_days = []
+    # get the list of holiday days of Switzerland in the Canton de Vaud
+    holiday_days = holidays.Switzerland(prov='VD')
 
-    # check if the data has already been extracted, transformed and saved
+    # check if the some studies have already been extracted
     if os.path.isfile(studies_save_path):
-        logging.info('Reading {}: save file found at "{}", loading data'
-            .format(day_period_str, studies_save_path))
+        logging.info('Reading studies database: save file found at "{}", loading data'.format(studies_save_path))
+        # if yes, load them
         df_studies = pd.read_pickle(studies_save_path)
+        # get the list of the days that have already been processed
+        already_processed_days = set(df_studies['Date'].tolist())
 
-    # if the current date has not already been retrieved and saved
-    else:
-        logging.info('Reading {}: no save file found at "{}", processing data'
-            .format(day_period_str, studies_save_path))
+    # get the list of the days that are required by the config's day range but are not in the studies DataFrame
+    days_to_process = [day for day in days_range \
+        if day.strftime('%Y%m%d') not in already_processed_days \
+        and day.weekday() not in [5, 6] \
+        and day not in holiday_days]
+
+    # go through the days that need to be processed
+    for day in days_to_process:
+        logging.info('Processing {}: day is required but not present in the main studies DataFrame'
+            .format(day.strftime('%Y%m%d')))
+
+        # create a local config object just to process the specified days
+        local_config = deepcopy(config)
+        local_config['main']['start_date'] = day.strftime('%Y-%m-%d')
+        local_config['main']['end_date'] = day.strftime('%Y-%m-%d')
 
         # load in the data
-        df_series = load_data_from_files(config)
+        df_series = load_data_from_files(local_config)
         # mark the rektakes and the machine group for each series
-        df_series = mark_retakes(config, df_series)
-        df_series = mark_machine_group(config, df_series)
+        df_series = mark_retakes(local_config, df_series)
+        df_series = mark_machine_group(local_config, df_series)
         # show some info about the series and studies
         #show_series_groupby(config, df_series)
 
         # group the series together into a DataFrame of studies
-        df_studies = df_series.replace(np.nan, '').groupby('SUID').agg({
-            'Series Date': lambda x: '/'.join(set(x)),
-            'Start Time': 'min',
-            'End Time': 'max',
-            'Study Description': lambda x: '/'.join(set(x)),
-            'Patient ID': lambda x: '/'.join(set(x)),
-            'Machine Group': lambda x: '/'.join(set(x)),
-            'Modality': lambda x: '/'.join(set(x)),
-            'Protocol Name': lambda x: '/'.join(set(x))
-        }).sort_values(['Series Date', 'Start Time', 'Machine Group', 'SUID'])\
-        .rename(columns={'Series Date': 'Date'})
+        df_studies_for_day = df_series.replace(np.nan, '').groupby('SUID').agg({
+                'Series Date': lambda x: '/'.join(set(x)),
+                'Start Time': 'min',
+                'End Time': 'max',
+                'Study Description': lambda x: '/'.join(set(x)),
+                'Patient ID': lambda x: '/'.join(set(x)),
+                'Machine Group': lambda x: '/'.join(set(x)),
+                'Modality': lambda x: '/'.join(set(x)),
+                'Protocol Name': lambda x: '/'.join(set(x))
+            }).sort_values(['Series Date', 'Start Time', 'Machine Group', 'SUID'])\
+            .rename(columns={'Series Date': 'Date'})
 
-        # save it to the studies file
+        # merge back the extracted studies into the main DataFrame
+        if df_studies is None:
+            df_studies = df_studies_for_day
+        else:
+            df_studies = pd.concat([df_studies, df_studies_for_day])\
+                .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
+
+    # if needed, save the newly extented studies to the studies file
+    if len(days_to_process) > 0:
         df_studies.to_pickle(studies_save_path)
 
-    return df_studies
+    # get the relevant studies from the main studies DataFrame
+    df_studies_query = df_studies.query('Date >= "{}" & Date <= "{}"'
+        .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
+    logging.info('Returning {} studies from the total of {} studies'.format(len(df_studies_query), len(df_studies)))
+
+    return df_studies_query
 
 def load_data_from_files(config):
     """
@@ -178,11 +212,12 @@ def mark_retakes(config, df_series):
 
         # if there is more than one split point, throw an error and do not do any splitting
         elif len(df_series_split) >= 1:
+            logging.info('  Found {} series to split'.format(len(df_series_split)))
             # go through all the series
             i_take = 1
             for ind in df_series_for_study.index:
                 if ind in df_series_split.index:
-                    logging.info('  Splitting {}: split {} between {:3d}/{:3d} [T={}/{}, D={}]'
+                    logging.debug('  Splitting {}: split {} between {:3d}/{:3d} [T={}/{}, D={}]'
                         .format(study_str, i_take, ind - 1, ind, df_series.loc[ind - 1, 'End Time'],
                         df_series.loc[ind, 'Start Time'], df_series_for_study.loc[ind, 'time_to_prev']))
                     i_take += 1

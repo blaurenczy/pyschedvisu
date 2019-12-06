@@ -16,7 +16,8 @@ from scripts.create_report import create_report
 
 def run():
     """
-    Main function running the entire pipeline.
+    Main function to run the whole pipeline. Includes starting the logging, reading the config and
+        running the entire pipeline with error catching.
     Args:
         None
     Returns:
@@ -32,11 +33,7 @@ def run():
 
     try:
         # run the workflow using the date range, settings, parameters, etc. found in the config
-        logging.warning("Starting SchedVisu workflow")
-        retrieve_and_save_data_from_PACS(config)
-        load_transform_and_save_data_from_files(config)
-        create_report(config)
-        logging.warning("Finished running SchedVisu workflow")
+        run_pipeline(config)
 
     except Exception as e:
         logging.error('Error while running workflow')
@@ -49,6 +46,20 @@ def run():
 
     finally:
         logging.shutdown()
+
+def run_pipeline(config):
+    """
+    Function running the entire pipeline with the specified config.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+    Returns:
+        None
+    """
+    logging.warning("Starting SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
+    retrieve_and_save_data_from_PACS(config)
+    load_transform_and_save_data_from_files(config)
+    create_report(config)
+    logging.warning("Finished running SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
 
 def create_logger():
     """
