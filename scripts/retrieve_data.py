@@ -204,7 +204,8 @@ def find_studies_for_day(config, study_date, modality):
 
     # do the query (C-FIND)
     df_studies = find_data(config, query_ds)
-    if df_studies is None or len(df_studies) == 0: return None
+    # abort if there is no result or if some required columns are missing
+    if df_studies is None or len(df_studies) == 0 or 'Study Description' not in df_studies.columns: return None
 
     # drop unwanted columns
     df_studies = df_studies.drop(config['retrieve']['to_drop_columns_studies'].split('\n'), axis=1, errors='ignore')
@@ -279,7 +280,7 @@ def find_series_for_studies(config, df_studies):
             logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
             continue
 
-        logging.debug('Appending {} series'.format(len(df_series_for_study)))
+        logging.debug('Study from {}: appending {} series'.format(inst_name, len(df_series_for_study)))
         # append the new series to the main series DataFrame
         df_series = df_series.append(df_series_for_study, sort=False, ignore_index=True)
 
@@ -359,8 +360,8 @@ def find_series_for_study(config, study_row):
             '", "'.join(df_series.loc[indices_to_exclude]['Series Description'])))
         df_series.drop(indices_to_exclude, inplace=True)
     logging.debug('Found {} series after filtering description'.format(len(df_series)))
-    # abort if no more result (all filtered)
-    if len(df_series) == 0: return None
+    # abort if no more result (all filtered) or if some required columns are missing
+    if len(df_series) == 0 or 'Protocol Name' not in df_series.columns: return None
 
     # further filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     df_series = df_series[~df_series['Protocol Name'].isin(config['retrieve']['series_protocols_to_exclude'].split('\n'))]
@@ -490,6 +491,13 @@ def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
                 'AcquisitionTime_start': 'Start Time',
                 'AcquisitionTime_end': 'End Time'})\
             .drop(columns=['InstanceNumber_start', 'InstanceNumber_end'])
+
+        # make sure that Start Time is before End Time for each rows, otherwise invert them
+        s = pd.to_datetime(df_info_ctpt_clean['Start Time'], format='%H%M%S')
+        e = pd.to_datetime(df_info_ctpt_clean['End Time'], format='%H%M%S')
+        df_inv = df_info_ctpt_clean[s > e].copy()
+        df_inv[['Start Time','End Time']] = df_inv[['End Time','Start Time']]
+        df_info_ctpt_clean[s > e] = df_inv
 
         # merge the info into the series DataFrame
         df_series = df_series.merge(df_info_ctpt_clean, on=['Patient ID', 'Series Instance UID', 'Modality'],

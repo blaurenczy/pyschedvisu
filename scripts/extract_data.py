@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import pandas as pd
+import numpy as np
 from datetime import timedelta
 from datetime import datetime as dt
 import scripts.main
@@ -38,10 +39,10 @@ def load_transform_and_save_data_from_files(config):
         df_series = mark_retakes(config, df_series)
         df_series = mark_machine_group(config, df_series)
         # show some info about the series and studies
-        show_series_groupby(config, df_series)
+        #show_series_groupby(config, df_series)
 
         # group the series together into a DataFrame of studies
-        df_studies = df_series.dropna().groupby('SUID').agg({
+        df_studies = df_series.replace(np.nan, '').groupby('SUID').agg({
             'Series Date': lambda x: '/'.join(set(x)),
             'Start Time': 'min',
             'End Time': 'max',

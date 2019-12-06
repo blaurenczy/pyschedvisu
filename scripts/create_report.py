@@ -39,8 +39,8 @@ def create_report(config):
     df = df[df['Machine'] != 'mixed cases']
 
     # go through each machine
-    #for machine in set(df['Machine']):
-    for machine in ['Discovery']:
+    for machine in set(df['Machine']):
+    #for machine in ['PET Siemens']:
 
         # create a matplotlib figure with the right aspect ratio
         fig = plt.figure(figsize=[8.27, 11.69])
@@ -230,7 +230,6 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
     if len(df_day) == 0: return
 
     # go through each study found for this day
-    i_study = 0
     for i_study in range(len(df_day)):
         study = df_day.iloc[i_study, :]
 
@@ -247,6 +246,15 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
                 .format(study.name, day_str, duration_hours))
             continue
 
+        # check if we have an overlap issue
+        if i_study > 0:
+            end_prev = pd.to_datetime(df_day.iloc[i_study - 1, :]['End Time'], format='%H%M%S')
+            end_prev_hour = end_prev.hour + end_prev.minute / 60 + end_prev.second / 3600
+            if start_hour <= end_prev_hour:
+                logging.warning(('Problem with study ...{} on {} & day {}: start hour {:6.3f} is ' +
+                    'before end hour of last study {:6.3f}').format('.'.join(study.name.split('.')[-2:]),
+                    machine, day_str, start_hour, end_prev_hour))
+
         # get the start and stop times rounded to the minute
         logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}'
             .format(day_str, start_hour, end_hour, duration_hours))
@@ -261,6 +269,10 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
         rounded_rect = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=-0.0040,rounding_size=0.155",
             fc="red", ec='black', mutation_aspect=0.4)
         sched_ax.add_patch(rounded_rect)
+
+        # DEBUG show information string
+        plt.text(x + w * 0.1, y + 0.1 * h, '{}: {} - {}: {:.2f}h'
+            .format(*study[['Patient ID', 'Start Time', 'End Time']], duration_hours))
 
 def create_schedule_distribution_plot(config, fig, machine, df):
     """
