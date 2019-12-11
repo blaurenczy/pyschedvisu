@@ -82,6 +82,9 @@ def load_transform_and_save_data_from_files(config):
             }).sort_values(['Series Date', 'Start Time', 'Machine Group', 'SUID'])\
             .rename(columns={'Series Date': 'Date'})
 
+        # create the description consensus
+        df_studies_for_day = create_description_consensus(config, df_studies_for_day)
+
         # merge back the extracted studies into the main DataFrame
         if df_studies is None:
             df_studies = df_studies_for_day
@@ -91,11 +94,10 @@ def load_transform_and_save_data_from_files(config):
             df_studies = pd.concat([df_studies, df_studies_for_day])\
                 .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
 
-    # if needed, save the newly extented studies to the studies file
+    # if there was any change to the main DataFrame
     if len(days_to_process) > 0:
+        # save the updated DataFrame
         df_studies.to_pickle(studies_save_path)
-
-    df_studies = create_description_consensus(config, df_studies)
 
     # get the relevant studies from the main studies DataFrame
     df_studies_query = df_studies.query('Date >= "{}" & Date <= "{}"'

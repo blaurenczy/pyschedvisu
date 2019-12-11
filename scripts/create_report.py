@@ -40,18 +40,23 @@ def create_report(config):
 
     # go through each machine
     #for machine in set(df['Machine']):
-    for machine in ['PET Siemens']:
+    #for machine in ['Intevo']:
+    #for machine in ['PET Siemens']:
+    for machine in ['PET GE']:
 
         # create a matplotlib figure with the right aspect ratio
         fig = plt.figure(figsize=[8.27, 11.69])
 
+        # get the data for the current machine
+        df_machine = df.query('Machine == @machine')
+
         # create the report, section by section
         create_header(config, fig, machine)
         #create_notes(config, fig)
-        create_schedule(config, fig, machine, df)
-        create_daily_table(config, fig, machine, df)
-        create_violin(config, fig, machine, df)
-        create_stat_table(config, fig, machine, df)
+        create_schedule(config, fig, machine, df_machine)
+        create_daily_table(config, fig, machine, df_machine)
+        create_violin(config, fig, machine, df_machine)
+        create_stat_table(config, fig, machine, df_machine)
 
         logging.info("Saving PDF file")
         fig.savefig('output_{}_{}_{}_{}.pdf'
@@ -156,10 +161,10 @@ def create_schedule(config, fig, machine, df):
 
     logging.debug("Creating schedule section")
 
-    logging.debug("Creating schedule plot")
+    logging.info("Creating schedule plot")
     create_schedule_plot(config, fig, machine, df)
 
-    logging.debug("Creating distribution plot")
+    logging.info("Creating distribution plot")
     create_schedule_distribution_plot(config, fig, machine, df)
 
 def create_schedule_plot(config, fig, machine, df):
@@ -175,41 +180,90 @@ def create_schedule_plot(config, fig, machine, df):
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config, remove_sundays=True)
-    _, _, days_range_with_sundays = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
 
     # create the new axes
     sched_ax = fig.add_axes([0.06, 0.42, 0.80, 0.39], anchor='NE')
-
-    # plot each day
-    for day in days_range:
-        plot_day_for_schedule_plot(config, sched_ax, machine, day, df)
+    sched_ax.invert_yaxis()
 
     # create the ticks and labels, with a reduced frequency
-    _, _, days_range_ticks = scripts.main.get_day_range(config, remove_sundays=True, reduce_freq=True)
+    _, _, days_range_xticks = scripts.main.get_day_range(config, reduce_freq=True)
     days_xticks, days_xtick_labels = [], []
-    for day in days_range_ticks:
-        if str(days_range_ticks.freq) != '<MonthBegin>' and day.weekday() in [5, 6]: continue
-        days_xticks.append(list(days_range_with_sundays).index(day) + 1)
-        days_xtick_labels.append(day.strftime('%d/%m'))
 
+    # plot each day
+    i_day = 0
+    n_days_to_show = len(days_range)
+    for day in days_range:
+        # plot the day
+        plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df)
+
+        # add the label if needed
+        if day in days_range_xticks:
+            days_xticks.append(i_day)
+            # if we are displaying on a daily basis
+            if days_range_xticks.freq.name in ['B', 'W-MON']:
+                days_xtick_labels.append(day.strftime('%d/%m'))
+            # if we are displaying on a monthly basis (e.g. whole year report)
+            elif days_range_xticks.freq.name in ['4W-MON', 'BMS']:
+                days_xtick_labels.append(day.strftime('%m/%y'))
+            # if we are displaying on a bigger range
+            else:
+                days_xtick_labels.append(day.strftime('%Y'))
+
+        logging.debug(f'day = {day.strftime("%Y%m%d")}, i_day = {i_day}, ' +
+            f'n_days_to_show = {n_days_to_show}, len(days_range) = {len(days_range)}')
+
+        i_day += 1
+        # if we are a Friday and it is not the last day of the range, increase the index to create a gap
+        if day.weekday() == 4 and i_day != n_days_to_show:
+            logging.debug(f'Adding an extra "spacer" day {i_day}')
+            i_day += 1
+            n_days_to_show += 1
+
+    # get the number of days displayed
+    n_days = i_day
     # set the ticks, labels and the limits of the plot
     start_hour = config['draw'].getint('sched_start_hour')
     end_hour = config['draw'].getint('sched_end_hour')
     plt.xticks(days_xticks, days_xtick_labels)
-    plt.yticks(ticks=range(start_hour, end_hour + 1),
-        labels=['{:02d}h'.format(i) for i in range(start_hour, end_hour + 1)])
 
     # calculate the x limits
-    margin = len(days_range) / 14
-    plt.xlim([max(1 - margin, 0.5), len(days_range) + margin])
+    if      n_days <= 5:    plt.xlim([-0.5, n_days - 0.5])
+    elif    n_days <= 11:   plt.xlim([-0.8, n_days - 0.2])
+    elif    n_days <= 23:   plt.xlim([-1.0, n_days + 0.0])
+    elif    n_days <= 104:  plt.xlim([-1.3, n_days + 0.3])
+    else:                   plt.xlim([-1.5, n_days + 0.5])
 
+    # set the y limits
+    _set_schedule_y_lims(config, df)
+
+def _set_schedule_y_lims(config, df):
+    """
+    Set the schedule-related plots y limits.
+    Args:
+        config (dict):      a dictionary holding all parameters for generating the report (dates, etc.)
+        df (DataFrame):     a pandas DataFrame containing the studies to plot
+    Returns:
+        None
+    """
     # calculate the best y limits
-    #end_times = df['End Time'].apply(lambda et: pd.to_datetime(et, format='%H%M%S'))
-    #end_hours = end_times.apply(lambda et: et.hour + et.minute / 60 + et.second / 3600)
-    plt.ylim((start_hour - 0.5, end_hour + 0.5))
+    start_times = df['Start Time'].apply(lambda st: pd.to_datetime(st, format='%H%M%S'))
+    end_times = df['End Time'].apply(lambda et: pd.to_datetime(et, format='%H%M%S'))
+    start_hours = start_times.apply(lambda st: st.hour + st.minute / 60 + st.second / 3600)
+    end_hours = end_times.apply(lambda et: et.hour + et.minute / 60 + et.second / 3600)
+    end_hour = max(round(max(end_hours) + 0.5), config['draw'].getint('sched_end_hour') + 0.5)
+    start_hour =  min(round(min(start_hours) - 0.5), config['draw'].getint('sched_start_hour') - 0.5)
+    # create the y-ticks range
+    yticks_range = range(round(start_hour), round(end_hour) + 1)
+    # do not show the last tick if that last tick is the plot's last Y limit
+    if yticks_range[-1] == end_hour:    yticks_range = yticks_range[:-1]
+    # do not show the first tick if that first tick is the plot's first Y limit
+    if yticks_range[0] == start_hour:   yticks_range = yticks_range[1:]
+    # create the y-ticks and set the limits
+    plt.yticks(ticks=yticks_range, labels=['{:02.0f}h'.format(i) for i in yticks_range])
+    plt.ylim((end_hour, start_hour))
 
-def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
+def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
     """
     Plot a single day in the schedule plot.
     Args:
@@ -217,16 +271,16 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
         sched_ax (Axes):    the matplotlib axes object for drawing
         machine (str):      a string specifying the currently processed machine
         day (datetime):     the currently processed day
-        df (DataFrame): a pandas DataFrame containing the studies to plot
+        i_day (int):        index of the current day where this day should be plotted
+        df (DataFrame):     a pandas DataFrame containing the studies to plot
     Returns:
         None
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config, remove_sundays=True)
+    start_date, end_date, days_range = scripts.main.get_day_range(config)
     # initialize some variables related to the dates
     day_str = day.strftime('%Y%m%d')
-    i_day = days_range.index(day) + 1
 
     # get the data for the current day and machine
     df_day = df.query('Date == "{}" & Machine == "{}"'.format(day_str, machine))
@@ -261,8 +315,8 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
                     machine, day_str, start_hour, end_prev_hour))
 
         # get the start and stop times rounded to the minute
-        logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}'
-            .format(day_str, start_hour, end_hour, duration_hours))
+        logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}, i_day: {}'
+            .format(day_str, start_hour, end_hour, duration_hours, i_day))
 
         # get the coordinates where the rounded rectangle for this study should be plotted
         box_w = config['draw'].getfloat('study_box_w')
@@ -276,18 +330,31 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, df):
         i_descr = descr_list.index(study['Description'])
 
         # check if the current study is a retake
-        i_take = int(study.name.split('_')[-1])
-        hatch = ''
-        edge_color = 'black'
+        try:
+            i_take = int(study.name.split('_')[-1])
+        except ValueError:
+            logging.warning('Problem with study ...{} on {} & day {}: got a weird retake number: "{}"'
+                .format('.'.join(study.name.split('.')[-2:]), machine, day_str,  study.name))
+            i_take = 1
+
+        hatch, edge_color = '', 'black'
         if i_take != 1:
             logging.debug(study.name + ' is a retake (reprise)')
             hatch = '/'
             edge_color = 'red'
             sibling_studies_patches = [
-                p for p in sched_ax.patches if p._label.split('_')[0] == study.name.split('_')[0]]
+                    p for p in sched_ax.patches
+                    if p._label.split('_')[0] == study.name.split('_')[0]
+                ]
             for p in sibling_studies_patches:
                 p.set_hatch('\\')
                 p.set_edgecolor('red')
+
+        # if we are displaying more than ~4 months, the inside of the blocks is not visible anymore.
+        #   Therefore, we need to use the edge to show the colors
+        if len(days_range) > 95:
+            edge_color = colors[i_descr]
+            hatch = ''
 
         # create the shape and plot it
         rounded_rect = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=-0.0040,rounding_size=0.155",
@@ -329,6 +396,7 @@ def create_schedule_distribution_plot(config, fig, machine, df):
 
     # add new axes
     distr_ax = fig.add_axes([0.86, 0.42, 0.12, 0.39], anchor='NE')
+    distr_ax.invert_yaxis()
 
     logging.debug("Calculating distribution")
     for descr in descr_list[0:3]:
@@ -363,10 +431,11 @@ def create_schedule_distribution_plot(config, fig, machine, df):
         counts = df_counts_resample['count']
         if max(counts) == 0: continue
         plt.plot([count / max(counts) for count in counts], counts_y_values, color=colors[descr_list.index(descr)])
-    # set some limits and remove the ticks
-    start_hour = config['draw'].getint('sched_start_hour')
-    end_hour = config['draw'].getint('sched_end_hour')
-    plt.ylim((start_hour - 0.5, end_hour + 0.5))
+
+    # set the y limits
+    _set_schedule_y_lims(config, df)
+
+    # remove the ticks
     plt.xticks([])
     plt.yticks([])
 
@@ -385,71 +454,122 @@ def create_daily_table(config, fig, machine, df):
     logging.info("Creating daily table section")
 
     # add new axes
-    table_ax = fig.add_axes([0.06, 0.31, 0.80, 0.12], anchor='NE')
+    table_ax = fig.add_axes([0.06, 0.29, 0.80, 0.12], anchor='NE')
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config, remove_sundays=True, reduce_freq=True)
+    start_date, end_date, days_range = scripts.main.get_day_range(config, reduce_freq=True)
+
     # initialize the variable holding all the information to be displayed in the table
-    data = [[],[],[]]
+    data = [[],[],[],[]]
+    cell_colors = [[],[],[],[]]
+    # if we are not in a daily display mode, add a row for the number of days counting
+    if days_range.freq.name != 'B':
+        data.append([])
+        cell_colors.append([])
+
     # go through each day
     i_day = 0
     for day in days_range:
         # get the next day in the range
         if len(days_range) > i_day + 1:
-            next_day = days_range[i_day + 1]
+            next_day = days_range[i_day + 1] - timedelta(days=1)
+            if next_day.weekday() == 6:
+                next_day = days_range[i_day + 1] - timedelta(days=3)
         else:
             next_day = end_date
         i_day += 1
-        # get the data and calculate values for the current day
-        df_day = df.query('Date >= "{}" & Date < "{}" & Machine == "{}"'
-            .format(day.strftime('%Y%m%d'), next_day.strftime('%Y%m%d'), machine))
-        n_days = sum([1 for d in pd.date_range(day, next_day) if d.weekday() not in [5, 6]])
-        n_max_studies = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', '')) * n_days
-        n_studies = len(df_day)
-        # skip the weekends
-        if str(days_range.freq) != '<MonthBegin>' and day.weekday() in [5, 6]:
-            [data[i].append('') for i in range(3)]
-            continue
-        # insert the values into the data table
-        data[0].append(n_max_studies)
-        data[1].append(n_studies)
-        data[2].append('{:3d}%'.format(int(100 * n_studies / n_max_studies)))
 
-    table = plt.table(cellText=data, cellLoc='center', loc='center')
+        # get the data and calculate values for the current day
+        df_day = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}"'.format(day.strftime('%Y%m%d'),
+            next_day.strftime('%Y%m%d'), machine))
+        n_days_in_range = len(set(df_day['Date']))
+        if n_days_in_range == 0:
+            logging.error(f'Problem with day {day.strftime("%Y%m%d")}: ' +
+                f'n_days_in_range = {n_days_in_range}, len(df_day) = {len(df_day)}!')
+            n_days_in_range = 1
+        n_max_studies = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', '')) * n_days_in_range
+        n_studies = len(df_day)
+
+        logging.debug('Processing day {}: next_day = {}, n_studies = {}, n_days_in_range = {}, n_max_studies = {}'
+            .format(day.strftime("%Y%m%d"), next_day.strftime("%Y%m%d"), n_studies, n_days_in_range, n_max_studies))
+
+        # if we are displaying on a daily basis
+        if days_range.freq.name in ['B', 'W-MON']:
+            if day == next_day:
+                day_range_str = day.strftime("%d/%m")
+            else:
+                day_range_str = '{} - {}'.format(day.strftime("%d/%m"), next_day.strftime("%d/%m"))
+        # if we are displaying on a monthly basis (e.g. whole year report)
+        elif days_range.freq.name in ['4W-MON', 'BMS']:
+            day_range_str = day.strftime("%m/%y")
+        # if we are displaying on a bigger range
+        else:
+            day_range_str = day.strftime("%Y")
+
+        # insert the values into the data table
+        data[0].append(day_range_str)
+        cell_colors[0].append('wheat')
+        # if we are not in a daily display mode, add a row for the number of days counting
+        i_row = 1
+        if days_range.freq.name != 'B':
+            data[i_row].append(n_days_in_range)
+            cell_colors[i_row].append('w')
+            i_row += 1
+        data[i_row].append(n_max_studies)
+        cell_colors[i_row].append('w')
+        data[i_row + 1].append(n_studies)
+        cell_colors[i_row + 1].append('w')
+        data[i_row + 2].append('{:3d}%'.format(int(100 * n_studies / n_max_studies)))
+        cell_colors[i_row + 2].append('w')
+
+    headers = ['Date', 'Slot', 'Exam.', 'Util.']
+    header_colors = ['lightgray', 'lightgray', 'lightgray', 'lightgray']
+    # if we are not in a daily display mode, add a row for the number of days counting
+    if days_range.freq.name != 'B':
+        headers = ['Date', '# Jours', 'Slot', 'Exam.', 'Util.']
+        header_colors = ['lightgray', 'lightgray', 'lightgray', 'lightgray', 'lightgray']
+
+    # plot the table
+    table = plt.table(cellText=data, cellColours=cell_colors, rowLabels=headers,
+        rowColours=header_colors, cellLoc='center', loc='center')
     table.set_fontsize(9)
     table.auto_set_font_size(False)
 
-    # add new axes for the row headers
-    table_header_ax = fig.add_axes([0.01, 0.31, 0.05, 0.12], anchor='NE')
-    table_header_ax.axis('off')
-    table_header = plt.table(cellText=[['Slot'], ['Exam.'], ['Util.']], cellLoc='center', loc='center')
-    table_header.set_fontsize(9)
-    table_header.auto_set_font_size(False)
-
     # calculate summary values
     n_cols = len(data[0])
-    tot_slots = sum([data[0][i_col] for i_col in range(n_cols) if isinstance(data[0][i_col], int)])
-    tot_n_studies = sum([data[1][i_col] for i_col in range(n_cols) if isinstance(data[1][i_col], int)])
+    # if we are not in a daily display mode, add a row for the number of days counting
+    i_row = 1
+    if days_range.freq.name != 'B':
+        tot_days = sum([data[i_row][i_col] for i_col in range(n_cols) if isinstance(data[i_row][i_col], int)])
+        i_row += 1
+    tot_slots = sum([data[i_row][i_col] for i_col in range(n_cols) if isinstance(data[i_row][i_col], int)])
+    tot_n_studies = sum([data[i_row + 1][i_col] for i_col in range(n_cols) if isinstance(data[i_row + 1][i_col], int)])
     if tot_slots == 0: tot_slots = 0.01 # avoid crashing with a zero division
     summ_data = [
+        ['Total', 'Moyen'],
         [int(tot_slots), '{:.1f}'.format(tot_slots / n_cols)],
         [tot_n_studies, '{:.1f}'.format(tot_n_studies / n_cols)],
         ['', '{:.1f}'.format(100 * tot_n_studies / tot_slots)]]
 
-    # add new axes for the summary values
-    table_summ_ax = fig.add_axes([0.86, 0.31, 0.12, 0.12], anchor='NE')
-    table_summ_ax.axis('off')
-    table_summ = plt.table(cellText=summ_data, cellLoc='center', loc='center')
-    table_summ.set_fontsize(10)
-    table_summ.auto_set_font_size(False)
+    summ_table_colors = [ ['lightgray', 'lightgray'], ['w', 'w'], ['w', 'w'], ['w', 'w']]
+
+    # if we are not in a daily display mode, add a row for the number of days counting
+    if days_range.freq.name != 'B':
+        summ_data = [
+            summ_data[0],
+            [int(tot_days), '{:.1f}'.format(tot_days / n_cols)],
+            summ_data[1],
+            summ_data[2],
+            summ_data[3]]
+        summ_table_colors = [ ['lightgray', 'lightgray'], ['w', 'w'], ['w', 'w'], ['w', 'w'], ['w', 'w']]
 
     # add new axes for the summary values
-    table_summ_header_ax = fig.add_axes([0.86, 0.3885, 0.12, 0.02], anchor='NE')
-    table_summ_header_ax.axis('off')
-    table_summ_header = plt.table(cellText=[['Total', 'Moyen']], cellLoc='center', loc='center')
-    table_summ_header.set_fontsize(10)
-    table_summ_header.auto_set_font_size(False)
+    table_summ_ax = fig.add_axes([0.86, 0.29, 0.12, 0.12], anchor='NE')
+    table_summ_ax.axis('off')
+    table_summ = plt.table(cellText=summ_data, cellColours=summ_table_colors, cellLoc='center', loc='center')
+    table_summ.set_fontsize(10)
+    table_summ.auto_set_font_size(False)
 
 def create_violin(config, fig, machine, df):
     """
@@ -466,7 +586,7 @@ def create_violin(config, fig, machine, df):
     logging.info("Creating violin plot section")
 
     # add new axes
-    vio_ax = fig.add_axes([0.09, 0.03, 0.40, 0.23], anchor='NE')
+    vio_ax = fig.add_axes([0.09, 0.07, 0.40, 0.19], anchor='NE')
 
     # get the starting and ending dates, and the days range from the config
     start_date, end_date, days_range = scripts.main.get_day_range(config)
@@ -494,8 +614,9 @@ def create_violin(config, fig, machine, df):
 
     results = vio_ax.violinplot(data, x_positions, showmeans=True, showextrema=True, showmedians=False)
     plt.ylabel('Durée (minutes)')
-    plt.xticks(ticks=x_positions, labels=descr_names, rotation=75)
-    y_minutes = range(0, 61, 10)
+    plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=8)
+    ylims = plt.ylim()
+    y_minutes = range(0, int(ylims[1] / 60) + 1, 10)
     plt.yticks(ticks=[x * 60 for x in y_minutes], labels=y_minutes)
     plt.ylim([(min(y_minutes) - 5) * 60, (max(y_minutes) + 5) * 60])
 

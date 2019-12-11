@@ -109,12 +109,11 @@ def load_config():
 
     return config
 
-def get_day_range(config, remove_sundays=False, reduce_freq=False):
+def get_day_range(config, reduce_freq=False):
     """
     Returns the starting day, the ending day and the days range specified by the config.
     Args:
         config (dict):              a dictionary holding all the necessary parameters
-        remove_sundays (boolean):   whether or not to exclude sundays from the range
         reduce_freq (boolean):      whether or not to give reduced frequency
     Returns:
         start_date (datetime):  the starting day specified by the config
@@ -124,26 +123,28 @@ def get_day_range(config, remove_sundays=False, reduce_freq=False):
 
     start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
     end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
-    days_range = pd.date_range(start_date, end_date, freq='D')
-
-    # remove the Sundays from the days range
-    if remove_sundays:
-        days_range = [d for d in days_range if d.weekday() != 6]
+    days_range = pd.date_range(start_date, end_date, freq='B')
 
     # if a reduced frequency is required, recreate the range with a frequency depending on the number of days to show
     if reduce_freq:
-        # for less than two weeks, show all days
-        if len(days_range) <= 14:
-            days_range = pd.date_range(start_date, end_date, freq='D')
-        # between two weeks and four weeks
-        elif len(days_range) > 14 and len(days_range) <= 28:
-            days_range = pd.date_range(start_date, end_date, freq='2D')
-        # between four weeks and eight weeks
-        elif len(days_range) > 28 and len(days_range) <= 56:
+        n_days = len(days_range)
+        # for less than 2 weeks, show all days
+        if n_days <= 10:
+            days_range = pd.date_range(start_date, end_date, freq='B')
+        # between 2 weeks and a month, group by week
+        elif n_days <= 22:
             days_range = pd.date_range(start_date, end_date, freq='W-MON')
-        # more than eight weeks
+        # between a month and 4 months, group by 4 weeks periods
+        elif n_days <= 86:
+            days_range = pd.date_range(start_date, end_date, freq='4W-MON')
+        # between 4 months and 12 months, group by month
+        elif n_days <= 252:
+            days_range = pd.date_range(start_date, end_date, freq='BMS')
+        # more than 12 months, group by year
         else:
-            days_range = pd.date_range(start_date, end_date, freq='MS')
+            days_range = pd.date_range(start_date, end_date, freq='BYS')
+
+        logging.debug(f'Days range has {n_days} days, grouping by {days_range.freq.name}')
 
     return start_date, end_date, days_range
 
