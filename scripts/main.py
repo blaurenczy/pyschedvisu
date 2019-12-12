@@ -10,9 +10,9 @@ import pandas as pd
 from datetime import datetime as dt
 from configparser import ConfigParser
 
-from scripts.retrieve_data import retrieve_and_save_data_from_PACS
-from scripts.extract_data import load_transform_and_save_data_from_files
-from scripts.create_report import create_report
+import retrieve_data
+import extract_data
+import create_report
 
 def run():
     """
@@ -56,9 +56,9 @@ def run_pipeline(config):
         None
     """
     logging.warning("Starting SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
-    retrieve_and_save_data_from_PACS(config)
-    load_transform_and_save_data_from_files(config)
-    create_report(config)
+    retrieve_data.retrieve_and_save_data_from_PACS(config)
+    extract_data.load_transform_and_save_data_from_files(config)
+    create_report.create_report(config)
     logging.warning("Finished running SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
 
 def create_logger():
@@ -97,10 +97,15 @@ def load_config():
         None
     """
 
+    config_path = 'config.ini'
+    if not os.path.isfile(config_path):
+        logging.error(f'Could not file config file at "{config_path}".')
+        return None
+
     # read in the configuration file
     config = ConfigParser()
     config.optionxform = str
-    config.read('config.ini')
+    config.read(config_path)
 
     # set debug level based on the configuration file's content
     logging.getLogger().setLevel(config['main']['debug_level'].upper())

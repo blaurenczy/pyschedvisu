@@ -12,8 +12,9 @@ import colorsys
 from random import random
 from datetime import date, timedelta
 from datetime import datetime as dt
-import scripts.main
-import scripts.extract_data
+
+import main
+import extract_data
 
 def create_report(config):
     """
@@ -27,13 +28,18 @@ def create_report(config):
 
     # load the relevant studies
     logging.info("Reading in studies")
-    df = scripts.extract_data.load_transform_and_save_data_from_files(config)
+    df = extract_data.load_transform_and_save_data_from_files(config)
+
+    # abort if no studies could be loaded
+    if df is None or len(df) == 0:
+        logging.error('Could not create report since there is no data.')
+        return
 
     # exclude some machines and do some grouping up
     df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
     df = df[df['Machine'] != 'mixed cases']
 
-    start_date, end_date, _ = scripts.main.get_day_range(config)
+    start_date, end_date, _ = main.get_day_range(config)
     week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
     week_numbers_str = '-'.join(week_numbers)
     report_type = get_report_type(week_numbers)
@@ -61,12 +67,12 @@ def create_report(config):
         create_stat_table(config, fig, machine, df_machine)
 
         logging.info("Saving PDF file")
-        fig.savefig('output_{}_{}_{}_{}.pdf'
+        fig.savefig('outputs/output_{}_{}_{}_{}.pdf'
             .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
             orientation='portrait', papertype='a4', format='pdf')
 
-        fig.savefig('output_{}_{}_{}_{}.png'
+        fig.savefig('outputs/output_{}_{}_{}_{}.png'
             .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
             orientation='portrait', papertype='a4', format='png')
@@ -85,7 +91,7 @@ def create_header(config, fig, machine):
     logging.info("Creating header section")
 
     # analyse the week numbers
-    start_date, end_date, _ = scripts.main.get_day_range(config)
+    start_date, end_date, _ = main.get_day_range(config)
     week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
     week_numbers_str = '-'.join(week_numbers)
     report_type = get_report_type(week_numbers)
@@ -187,14 +193,14 @@ def create_schedule_plot(config, fig, machine, df):
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
 
     # create the new axes
     sched_ax = fig.add_axes([0.06, 0.42, 0.80, 0.39], anchor='NE')
     sched_ax.invert_yaxis()
 
     # create the ticks and labels, with a reduced frequency
-    _, _, days_range_xticks = scripts.main.get_day_range(config, reduce_freq=True)
+    _, _, days_range_xticks = main.get_day_range(config, reduce_freq=True)
     days_xticks, days_xtick_labels = [], []
 
     # plot each day
@@ -285,7 +291,7 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
     # initialize some variables related to the dates
     day_str = day.strftime('%Y%m%d')
 
@@ -394,7 +400,7 @@ def create_schedule_distribution_plot(config, fig, machine, df):
     """
 
     # check whether the distribution plot should be done or not
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
     if len(days_range) < 7 * 12: return
 
     # define some parameters for the distribution
@@ -473,7 +479,7 @@ def create_daily_table(config, fig, machine, df):
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config, reduce_freq=True)
+    start_date, end_date, days_range = main.get_day_range(config, reduce_freq=True)
 
     # initialize the variable holding all the information to be displayed in the table
     data = [[],[],[],[],[]]
@@ -627,7 +633,7 @@ def create_violin(config, fig, machine, df):
     vio_ax = fig.add_axes([0.09, 0.07, 0.40, 0.19], anchor='NE')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
 
     # get the list of descriptions for the currently processed machine
     descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
@@ -707,7 +713,7 @@ def create_stat_table(config, fig, machine, df):
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
 
     # get the list of descriptions for the currently processed machine
     descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']

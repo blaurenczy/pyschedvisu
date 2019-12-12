@@ -9,7 +9,8 @@ import holidays
 from copy import deepcopy
 from datetime import timedelta
 from datetime import datetime as dt
-import scripts.main
+
+import main
 
 def load_transform_and_save_data_from_files(config):
     """
@@ -21,7 +22,7 @@ def load_transform_and_save_data_from_files(config):
     """
 
     # get the date range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
     # initialize the save path's location
     studies_save_path = config['extract']['studies_db_save_path']
     # initialize the studies DataFrame and its days content to empty, in case nothing has been done yet
@@ -94,6 +95,9 @@ def load_transform_and_save_data_from_files(config):
             df_studies = pd.concat([df_studies, df_studies_for_day])\
                 .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
 
+    # abort if no studies could be loaded
+    if df_studies is None or len(df_studies) == 0: return
+
     # if there was any change to the main DataFrame
     if len(days_to_process) > 0:
         # save the updated DataFrame
@@ -118,7 +122,7 @@ def load_data_from_files(config):
     logging.debug("Loading data from files")
 
     # get the date range from the config
-    start_date, end_date, days_range = scripts.main.get_day_range(config)
+    start_date, end_date, days_range = main.get_day_range(config)
     # create the variable holding all the series for all days
     df_series = None
 
