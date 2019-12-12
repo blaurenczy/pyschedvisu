@@ -38,11 +38,13 @@ def create_report(config):
     week_numbers_str = '-'.join(week_numbers)
     report_type = get_report_type(week_numbers)
 
+    # either go through all available machines, or use the list specified by the config
+    machines_list = set(df['Machine'])
+    if config['draw']['debug_single_machine'] != '*':
+        machines_list = config['draw']['debug_single_machine'].split(',')
+
     # go through each machine
-    #for machine in set(df['Machine']):
-    #for machine in ['Intevo']:
-    #for machine in ['PET Siemens']:
-    for machine in ['PET GE']:
+    for machine in machines_list:
 
         # create a matplotlib figure with the right aspect ratio
         fig = plt.figure(figsize=[8.27, 11.69])
@@ -63,6 +65,11 @@ def create_report(config):
             .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
             orientation='portrait', papertype='a4', format='pdf')
+
+        fig.savefig('output_{}_{}_{}_{}.png'
+            .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
+            start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
+            orientation='portrait', papertype='a4', format='png')
 
 def create_header(config, fig, machine):
     """
@@ -305,6 +312,12 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
                 .format(study.name, day_str, duration_hours))
             continue
 
+        # get the coordinates where the rounded rectangle for this study should be plotted
+        box_w = config['draw'].getfloat('study_box_w')
+        x_shift = config['draw'].getfloat('study_x_shift')
+        x = i_day - (box_w * 0.5) + (x_shift * (-1 if (i_study % 2 == 0) else 1))
+        y, w, h = start_hour, box_w, duration_hours
+
         # check if we have an overlap issue
         if i_study > 0:
             end_prev = pd.to_datetime(df_day.iloc[i_study - 1, :]['End Time'], format='%H%M%S')
@@ -314,15 +327,17 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
                     'before end hour of last study {:6.3f}').format('.'.join(study.name.split('.')[-2:]),
                     machine, day_str, start_hour, end_prev_hour))
 
+            # check how long the gap was with previous study
+            gap_duration_hour = start_hour - end_prev_hour
+            gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
+            if gap_duration_hour * 60 >= gap_threshold:
+                # plot a black line to show gaps
+                plt.plot([i_day, i_day], [start_hour - 0.15, end_prev_hour + 0.15],
+                    color='black', linestyle='dashed', linewidth=2)
+
         # get the start and stop times rounded to the minute
         logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}, i_day: {}'
             .format(day_str, start_hour, end_hour, duration_hours, i_day))
-
-        # get the coordinates where the rounded rectangle for this study should be plotted
-        box_w = config['draw'].getfloat('study_box_w')
-        x_shift = config['draw'].getfloat('study_x_shift')
-        x = i_day - (box_w * 0.5) + (x_shift * (-1 if (i_study % 2 == 0) else 1))
-        y, w, h = start_hour, box_w, duration_hours
 
         # define colors
         descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
@@ -461,8 +476,8 @@ def create_daily_table(config, fig, machine, df):
     start_date, end_date, days_range = scripts.main.get_day_range(config, reduce_freq=True)
 
     # initialize the variable holding all the information to be displayed in the table
-    data = [[],[],[],[]]
-    cell_colors = [[],[],[],[]]
+    data = [[],[],[],[],[]]
+    cell_colors = [[],[],[],[],[]]
     # if we are not in a daily display mode, add a row for the number of days counting
     if days_range.freq.name != 'B':
         data.append([])
@@ -480,16 +495,34 @@ def create_daily_table(config, fig, machine, df):
             next_day = end_date
         i_day += 1
 
-        # get the data and calculate values for the current day
-        df_day = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}"'.format(day.strftime('%Y%m%d'),
-            next_day.strftime('%Y%m%d'), machine))
+        # get the data and calculate values for the current day range
+        df_day = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}"'
+            .format(day.strftime('%Y%m%d'), next_day.strftime('%Y%m%d'), machine))
         n_days_in_range = len(set(df_day['Date']))
         if n_days_in_range == 0:
-            logging.error(f'Problem with day {day.strftime("%Y%m%d")}: ' +
-                f'n_days_in_range = {n_days_in_range}, len(df_day) = {len(df_day)}!')
+            logging.error('Problem with day {}: n_days_in_range = {}, len(df_day) = {}!'
+                .format(day.strftime("%Y%m%d"), n_days_in_range, len(df_day)))
             n_days_in_range = 1
-        n_max_studies = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', '')) * n_days_in_range
+        n_max_studies_per_day = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', ''))
+        n_max_studies = n_max_studies_per_day * n_days_in_range
         n_studies = len(df_day)
+
+        # count the number of gaps
+        n_gaps = 0
+        for i_study in range(len(df_day)):
+            # get the start time, end time and duration as hours with decimals
+            start = pd.to_datetime(df_day.iloc[i_study]['Start Time'], format='%H%M%S')
+            start_hour = start.hour + start.minute / 60 + start.second / 3600
+            # check if we have an overlap issue
+            if i_study > 0:
+                # get the end time of the last study
+                end_prev = pd.to_datetime(df_day.iloc[i_study - 1]['End Time'], format='%H%M%S')
+                end_prev_hour = end_prev.hour + end_prev.minute / 60 + end_prev.second / 3600
+                # check how long the gap was with previous study
+                gap_duration_hour = start_hour - end_prev_hour
+                gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
+                if gap_duration_hour * 60 >= gap_threshold:
+                    n_gaps += 1
 
         logging.debug('Processing day {}: next_day = {}, n_studies = {}, n_days_in_range = {}, n_max_studies = {}'
             .format(day.strftime("%Y%m%d"), next_day.strftime("%Y%m%d"), n_studies, n_days_in_range, n_max_studies))
@@ -508,27 +541,31 @@ def create_daily_table(config, fig, machine, df):
             day_range_str = day.strftime("%Y")
 
         # insert the values into the data table
-        data[0].append(day_range_str)
-        cell_colors[0].append('wheat')
+        i_row = 0
+        data[i_row].append(day_range_str)
+        cell_colors[i_row].append('wheat')
+        i_row += 1
         # if we are not in a daily display mode, add a row for the number of days counting
-        i_row = 1
         if days_range.freq.name != 'B':
             data[i_row].append(n_days_in_range)
             cell_colors[i_row].append('w')
             i_row += 1
         data[i_row].append(n_max_studies)
         cell_colors[i_row].append('w')
-        data[i_row + 1].append(n_studies)
-        cell_colors[i_row + 1].append('w')
-        data[i_row + 2].append('{:3d}%'.format(int(100 * n_studies / n_max_studies)))
-        cell_colors[i_row + 2].append('w')
+        i_row += 1
+        data[i_row].append(n_studies)
+        cell_colors[i_row].append('w')
+        i_row += 1
+        data[i_row].append(n_gaps)
+        cell_colors[i_row].append('w')
+        i_row += 1
+        data[i_row].append('{:3d}%'.format(int(100 * n_studies / n_max_studies)))
+        cell_colors[i_row].append('w')
 
-    headers = ['Date', 'Slot', 'Exam.', 'Util.']
-    header_colors = ['lightgray', 'lightgray', 'lightgray', 'lightgray']
+    headers = ['Date', 'Slot', 'Exam.', 'Trous', 'Util.']
     # if we are not in a daily display mode, add a row for the number of days counting
-    if days_range.freq.name != 'B':
-        headers = ['Date', '# Jours', 'Slot', 'Exam.', 'Util.']
-        header_colors = ['lightgray', 'lightgray', 'lightgray', 'lightgray', 'lightgray']
+    if days_range.freq.name != 'B': headers.insert(2, '# Jours')
+    header_colors = ['lightgray'] * len(headers)
 
     # plot the table
     table = plt.table(cellText=data, cellColours=cell_colors, rowLabels=headers,
@@ -537,32 +574,33 @@ def create_daily_table(config, fig, machine, df):
     table.auto_set_font_size(False)
 
     # calculate summary values
-    n_cols = len(data[0])
+    i_row = 0
+    n_cols = len(data[i_row])
+    i_row += 1
     # if we are not in a daily display mode, add a row for the number of days counting
-    i_row = 1
     if days_range.freq.name != 'B':
         tot_days = sum([data[i_row][i_col] for i_col in range(n_cols) if isinstance(data[i_row][i_col], int)])
         i_row += 1
     tot_slots = sum([data[i_row][i_col] for i_col in range(n_cols) if isinstance(data[i_row][i_col], int)])
-    tot_n_studies = sum([data[i_row + 1][i_col] for i_col in range(n_cols) if isinstance(data[i_row + 1][i_col], int)])
+    i_row += 1
+    tot_n_studies = sum([data[i_row][i_col] for i_col in range(n_cols) if isinstance(data[i_row][i_col], int)])
+    i_row += 1
+    tot_gaps = sum([data[i_row][i_col] for i_col in range(n_cols) if isinstance(data[i_row][i_col], int)])
+    i_row += 1
     if tot_slots == 0: tot_slots = 0.01 # avoid crashing with a zero division
-    summ_data = [
-        ['Total', 'Moyen'],
-        [int(tot_slots), '{:.1f}'.format(tot_slots / n_cols)],
-        [tot_n_studies, '{:.1f}'.format(tot_n_studies / n_cols)],
-        ['', '{:.1f}'.format(100 * tot_n_studies / tot_slots)]]
-
-    summ_table_colors = [ ['lightgray', 'lightgray'], ['w', 'w'], ['w', 'w'], ['w', 'w']]
+    # create the summary data table
+    summ_data = []
+    summ_data.append(['Total', 'Moyen'])
+    summ_data.append([int(tot_slots), '{:.1f}'.format(tot_slots / n_cols)])
+    summ_data.append([tot_n_studies, '{:.1f}'.format(tot_n_studies / n_cols)])
+    summ_data.append([tot_gaps, '{:.1f}'.format(tot_gaps / n_cols)])
+    summ_data.append(['', '{:.1f}'.format(100 * tot_n_studies / tot_slots)])
+    summ_table_colors = [ ['lightgray']*2, ['w']*2, ['w']*2, ['w']*2, ['w']*2 ]
 
     # if we are not in a daily display mode, add a row for the number of days counting
     if days_range.freq.name != 'B':
-        summ_data = [
-            summ_data[0],
-            [int(tot_days), '{:.1f}'.format(tot_days / n_cols)],
-            summ_data[1],
-            summ_data[2],
-            summ_data[3]]
-        summ_table_colors = [ ['lightgray', 'lightgray'], ['w', 'w'], ['w', 'w'], ['w', 'w'], ['w', 'w']]
+        summ_data.insert(2, [int(tot_days), '{:.1f}'.format(tot_days / n_cols)])
+        summ_table_colors = [ ['lightgray']*2, ['w']*2, ['w']*2, ['w']*2, ['w']*2, ['w']*2 ]
 
     # add new axes for the summary values
     table_summ_ax = fig.add_axes([0.86, 0.29, 0.12, 0.12], anchor='NE')
