@@ -67,7 +67,7 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
     # create the path where the input day's data would be stored
     day_str = day.strftime('%Y%m%d')
-    day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
+    day_save_dir_path = os.path.join(config['retrieve']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))
     day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y%m%d')))
 
     # check if the current date has already been retrieved and saved

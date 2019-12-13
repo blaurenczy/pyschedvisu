@@ -63,7 +63,7 @@ def load_transform_and_save_data_from_files(config):
             logging.info('Processing {} [{}/{}]: day is required and already processed but "force" option is on'
                 .format(day.strftime('%Y%m%d'), days_to_process.index(day), len(days_to_process)))
         else:
-            logging.info('Processing {} [{}/{}]: day is required but not present in the main studies DataFrame'
+            logging.info('Processing {} [{}/{}]: day is required but not present in the main DataFrame'
                 .format(day.strftime('%Y%m%d'), days_to_process.index(day), len(days_to_process)))
 
         # create a local config object just to process the specified days
@@ -116,14 +116,15 @@ def load_transform_and_save_data_from_files(config):
     if df_studies is None or len(df_studies) == 0: return None, None
 
     # re-order the columns according to the config
-    ordered_columns =  config['retrieve']['series_column_order'].split(',')
-    unique_columns = set()
-    add_to_unique_list = unique_columns.add
-    columns = [
-        col for col in ordered_columns + df_series.columns.tolist()
-        if not (col in unique_columns or add_to_unique_list(col))
-        and col in df_series.columns]
-    df_series = df_series[columns]
+    if df_series is not None and len(df_series) > 0:
+        ordered_columns =  config['retrieve']['series_column_order'].split(',')
+        unique_columns = set()
+        add_to_unique_list = unique_columns.add
+        columns = [
+            col for col in ordered_columns + df_series.columns.tolist()
+            if not (col in unique_columns or add_to_unique_list(col))
+            and col in df_series.columns]
+        df_series = df_series[columns]
 
     # if there was any change to the main DataFrame
     if len(days_to_process) > 0:
@@ -136,10 +137,12 @@ def load_transform_and_save_data_from_files(config):
     df_studies_query = df_studies.query('Date >= "{}" & Date <= "{}"'
         .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
     logging.info('Returning {} studies from the total of {} studies'.format(len(df_studies_query), len(df_studies)))
-    # get the relevant series from the main studies DataFrame
-    df_series_query = df_series.query('Date >= "{}" & Date <= "{}"'
-        .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
-    logging.info('Returning {} series from the total of {} series'.format(len(df_series_query), len(df_series)))
+    # get the relevant series from the main series DataFrame
+    df_series_query = None
+    if df_series is not None and len(df_series) > 0:
+        df_series_query = df_series.query('Date >= "{}" & Date <= "{}"'
+            .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
+        logging.info('Returning {} series from the total of {} series'.format(len(df_series_query), len(df_series)))
 
     return df_studies_query, df_series_query
 
@@ -166,7 +169,7 @@ def load_data_from_files(config):
         try:
 
             # create the path where the input day's data would be stored
-            day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
+            day_save_dir_path = os.path.join(config['retrieve']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))
             day_str = day.strftime('%Y%m%d')
             day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day_str))
 
