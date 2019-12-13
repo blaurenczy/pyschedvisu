@@ -559,6 +559,19 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
                 'AcquisitionTime_end': 'End Time'})\
             .drop(columns=['InstanceNumber_start', 'InstanceNumber_end'])
 
+        # make sure that ContentTime_start is before ContentTime_end for each rows, otherwise invert them
+        s = pd.to_datetime(df_info_ctpt_clean['ContentTime_start'], format='%H%M%S')
+        e = pd.to_datetime(df_info_ctpt_clean['ContentTime_end'], format='%H%M%S')
+        df_inv = df_info_ctpt_clean[s > e].copy()
+        df_inv[['ContentTime_start', 'ContentTime_end']] = df_inv[['ContentTime_end', 'ContentTime_start']]
+        df_info_ctpt_clean[s > e] = df_inv
+
+        # fix FDG Cerveau series where AcquisitionTime is not correct, therefore ContentTime needs to be used
+        end_times = pd.to_datetime(df_info_ctpt_clean['End Time'], format='%H%M%S')
+        end_content_times = pd.to_datetime(df_info_ctpt_clean['ContentTime_end'], format='%H%M%S')
+        wrong_end_times = df_info_ctpt_clean[end_content_times > end_times]
+        df_info_ctpt_clean.loc[wrong_end_times.index, 'End Time'] = wrong_end_times['ContentTime_end']
+
         # drop columns where all values are the same
         df_info_ctpt_clean_nonan = df_info_ctpt_clean.replace(np.nan, '')
         for f in to_fetch_fields:
