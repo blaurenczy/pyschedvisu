@@ -28,7 +28,7 @@ def create_report(config):
 
     # load the relevant studies
     logging.info("Reading in studies")
-    df = extract_data.load_transform_and_save_data_from_files(config)
+    df, _ = extract_data.load_transform_and_save_data_from_files(config)
 
     # abort if no studies could be loaded
     if df is None or len(df) == 0:

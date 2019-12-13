@@ -126,8 +126,8 @@ def get_day_range(config, reduce_freq=False):
         days_range (daterange): the pandas daterange going from the starting to then ending day
     """
 
-    start_date = dt.strptime(config['main']['start_date'], '%Y-%m-%d')
-    end_date = dt.strptime(config['main']['end_date'], '%Y-%m-%d')
+    start_date = dt.strptime(config['main']['start_date'], '%Y%m%d')
+    end_date = dt.strptime(config['main']['end_date'], '%Y%m%d')
     days_range = pd.date_range(start_date, end_date, freq='B')
 
     # if a reduced frequency is required, recreate the range with a frequency depending on the number of days to show

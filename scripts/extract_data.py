@@ -25,9 +25,11 @@ def load_transform_and_save_data_from_files(config):
     start_date, end_date, days_range = main.get_day_range(config)
     # initialize the save path's location
     studies_save_path = config['extract']['studies_db_save_path']
-    # initialize the studies DataFrame and its days content to empty, in case nothing has been done yet
-    df_studies = None
-    already_processed_days = []
+    series_save_path = config['extract']['series_db_save_path']
+    # initialize the studies and series DataFrames
+    df_studies, df_series = None, None
+    # initialize the list of already_processed_days
+    already_processed_days_studies, already_processed_days_series, already_processed_days = [], [], []
     # get the list of holiday days of Switzerland in the Canton de Vaud
     holiday_days = holidays.Switzerland(prov='VD')
 
@@ -37,9 +39,17 @@ def load_transform_and_save_data_from_files(config):
         # if yes, load them
         df_studies = pd.read_pickle(studies_save_path)
         # get the list of the days that have already been processed
-        already_processed_days = set(df_studies['Date'].tolist())
+        already_processed_days_studies = list(set(df_studies['Date'].tolist()))
+
+    # check if the some series have already been extracted
+    if os.path.isfile(series_save_path):
+        logging.info('Reading series database: save file found at "{}", loading data'.format(series_save_path))
+        # if yes, load them
+        df_series = pd.read_pickle(series_save_path)
+        already_processed_days_series = list(set(df_series['Date'].tolist()))
 
     # get the list of the days that are required by the config's day range but are not in the studies DataFrame
+    already_processed_days = already_processed_days_studies + already_processed_days_series
     days_to_process = [day for day in days_range \
         if (day.strftime('%Y%m%d') not in already_processed_days \
         or config['extract'].getboolean('debug_force_extract_studies'))\
@@ -58,21 +68,29 @@ def load_transform_and_save_data_from_files(config):
 
         # create a local config object just to process the specified days
         local_config = deepcopy(config)
-        local_config['main']['start_date'] = day.strftime('%Y-%m-%d')
-        local_config['main']['end_date'] = day.strftime('%Y-%m-%d')
+        local_config['main']['start_date'] = day.strftime('%Y%m%d')
+        local_config['main']['end_date'] = day.strftime('%Y%m%d')
 
         # load in the data
-        df_series = load_data_from_files(local_config)
-        if df_series is None: continue
+        df_series_for_day = load_data_from_files(local_config)
+        if df_series_for_day is None: continue
         # mark the rektakes and the machine group for each series
-        df_series = mark_retakes(local_config, df_series)
-        df_series = mark_machine_group(local_config, df_series)
-        # show some info about the series and studies
-        #show_series_groupby(config, df_series)
+        df_series_for_day = mark_machine_group(local_config, df_series_for_day)
+        df_series_for_day = mark_retakes(local_config, df_series_for_day)
+
+        # merge back the extracted series into the main DataFrame
+        if df_series is None:
+            df_series = df_series_for_day
+        else:
+            # remove any rows belonging to the same day, if any
+            df_series = df_series[df_series['Date'] != day.strftime('%Y%m%d')]
+            df_series = pd.concat([df_series, df_series_for_day])\
+                .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])\
+                .reset_index(drop=True)
 
         # group the series together into a DataFrame of studies
-        df_studies_for_day = df_series.replace(np.nan, '').groupby('SUID').agg({
-                'Series Date': lambda x: '/'.join(set(x)),
+        df_studies_for_day = df_series_for_day.replace(np.nan, '').groupby('SUID').agg({
+                'Date': lambda x: '/'.join(set(x)),
                 'Start Time': 'min',
                 'End Time': 'max',
                 'Study Description': lambda x: '/'.join(set(x)),
@@ -80,8 +98,7 @@ def load_transform_and_save_data_from_files(config):
                 'Machine Group': lambda x: '/'.join(set(x)),
                 'Modality': lambda x: '/'.join(set(x)),
                 'Protocol Name': lambda x: '/'.join(set(x))
-            }).sort_values(['Series Date', 'Start Time', 'Machine Group', 'SUID'])\
-            .rename(columns={'Series Date': 'Date'})
+            }).sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
 
         # create the description consensus
         df_studies_for_day = create_description_consensus(config, df_studies_for_day)
@@ -96,19 +113,35 @@ def load_transform_and_save_data_from_files(config):
                 .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
 
     # abort if no studies could be loaded
-    if df_studies is None or len(df_studies) == 0: return
+    if df_studies is None or len(df_studies) == 0: return None, None
+
+    # re-order the columns according to the config
+    ordered_columns =  config['retrieve']['series_column_order'].split(',')
+    unique_columns = set()
+    add_to_unique_list = unique_columns.add
+    columns = [
+        col for col in ordered_columns + df_series.columns.tolist()
+        if not (col in unique_columns or add_to_unique_list(col))
+        and col in df_series.columns]
+    df_series = df_series[columns]
 
     # if there was any change to the main DataFrame
     if len(days_to_process) > 0:
         # save the updated DataFrame
         df_studies.to_pickle(studies_save_path)
+        # save the updated DataFrame
+        df_series.to_pickle(series_save_path)
 
     # get the relevant studies from the main studies DataFrame
     df_studies_query = df_studies.query('Date >= "{}" & Date <= "{}"'
         .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
     logging.info('Returning {} studies from the total of {} studies'.format(len(df_studies_query), len(df_studies)))
+    # get the relevant series from the main studies DataFrame
+    df_series_query = df_series.query('Date >= "{}" & Date <= "{}"'
+        .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
+    logging.info('Returning {} series from the total of {} series'.format(len(df_series_query), len(df_series)))
 
-    return df_studies_query
+    return df_studies_query, df_series_query
 
 def load_data_from_files(config):
     """
@@ -135,7 +168,7 @@ def load_data_from_files(config):
             # create the path where the input day's data would be stored
             day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
             day_str = day.strftime('%Y%m%d')
-            day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y-%m-%d')))
+            day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day_str))
 
             # check if the current date has already been retrieved and saved
             if os.path.isfile(day_save_file_path):
@@ -171,6 +204,16 @@ def load_data_from_files(config):
 
     # create an index for the concatenated series
     df_series = df_series.reset_index(drop=True)
+
+    # re-order the columns according to the config
+    ordered_columns =  config['retrieve']['series_column_order'].split(',')
+    unique_columns = set()
+    add_to_unique_list = unique_columns.add
+    columns = [
+        col for col in ordered_columns + df_series.columns.tolist()
+        if not (col in unique_columns or add_to_unique_list(col))
+        and col in df_series.columns]
+    df_series = df_series[columns]
 
     return df_series
 
@@ -221,6 +264,33 @@ def mark_retakes(config, df_series):
         df_series_for_study.loc[df_series_for_study['time_to_prev'] < timedelta(0), 'time_to_prev'] *= -1
         # get the series where a split should be done
         df_series_split = df_series_for_study[df_series_for_study['time_to_prev'] > timedelta(seconds=study_split_thresh)]
+
+        # also check whether there is a series from another study inbetween our study:
+        # get all the other series that are for the same day, same machine, but different Study Instance UID
+        df_series_other = df_series[
+            (df_series['Study Instance UID'] != sUID)
+            & (df_series['Date'] == df_series_for_study.iloc[0]['Date'])
+            & (df_series['Machine Group'] == df_series_for_study.iloc[0]['Machine Group'])]
+        # get the start and end time of these other series
+        start_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
+        end_times_other = pd.to_datetime(df_series_other['End Time'], format=FMT)
+        # get the start and end time of the current study's series
+        study_start = min(df_series_for_study['Start Time'])
+        study_end = max(df_series_for_study['End Time'])
+        # get all the series that have their times inbetween our study
+        df_series_inbetween = df_series_other[(start_times_other > study_start) & (end_times_other < study_end)]
+        n_inbetween = len(df_series_inbetween)
+        # if any inbetween series found
+        if n_inbetween > 0:
+            # get the start time of the inbetween series
+            inbetween_start = min(pd.to_datetime(df_series_inbetween['Start Time'], format=FMT))
+            logging.debug(f'Found {n_inbetween} series that are inbetween the start & end of study {study_str}')
+            # get the series from our study that splits our study (last series before the inbetween series)
+            logging.info(f'Found {n_inbetween} series that are inbetween the start ({study_start}) ' +
+                f'and end of study ({study_end}) {study_str}')
+            new_series_split = df_series_for_study[df_series_for_study['Start Time'] > inbetween_start]\
+                .sort_values('Start Time').iloc[0]
+            df_series_split = df_series_split.append(new_series_split)
 
         # if there is no splitting indices
         if len(df_series_split) == 0:
@@ -281,13 +351,13 @@ def mark_machine_group(config, df_series_input):
     df_series.loc[:, 'Machine short'] = df_series['Machine short'].apply(lambda m: re.sub(r'[ _]', '', m))
 
     # create a machine group name (as a comma-separated list) for each study
-    df_machine_groups = df_series.groupby('SUID')['Machine short']
+    df_machine_groups = df_series.groupby('Study Instance UID')['Machine short']
     df_machine_groups = df_machine_groups.apply(lambda m: ','.join(sorted(list(set(m)))))
     df_machine_groups = df_machine_groups.reset_index().rename(
         columns = {'Machine short': 'Machine Group List'})
 
     # merge the machine group info back into the series DataFrame
-    df_series = pd.merge(df_machine_groups, df_series, how='inner', on='SUID')
+    df_series = pd.merge(df_machine_groups, df_series, how='inner', on='Study Instance UID')
 
     # create a DataFrame linking the machine group names to their comma-separated list
     conf_machine_group = pd.DataFrame(
@@ -349,9 +419,9 @@ def create_description_consensus(config, df_studies):
 
     return df_studies
 
-def show_series_groupby(config, df_series):
+def DEPRECATED_show_series_groupby(config, df_series):
     """
-    Group series together using a defined set of columns.
+    DEPRECATED: Group series together using a defined set of columns.
     Args:
         config (dict): a dictionary holding all the necessary parameters
         df_series (DataFrame): a pandas DataFrame holding the series
@@ -378,7 +448,7 @@ def show_series_groupby(config, df_series):
     display(df_count_studies)
 
     # aggregate series to count the number of series per day per machine
-    groupby_columns = ['Series Date', 'Machine Group']
+    groupby_columns = ['Date', 'Machine Group']
     df_series_grouped_by_series_day = df_series.groupby(groupby_columns)
     df_count_series_day = pd.DataFrame(df_series_grouped_by_series_day.count())
     df_count_series_day = pd.DataFrame(df_count_series_day.rename(

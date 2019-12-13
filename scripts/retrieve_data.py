@@ -11,6 +11,7 @@ import shutil
 from datetime import datetime as dt
 from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 from pandas import DataFrame
 
@@ -67,7 +68,7 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
     # create the path where the input day's data would be stored
     day_str = day.strftime('%Y%m%d')
     day_save_dir_path = os.path.join('data', day.strftime('%Y'), day.strftime('%Y-%m'))
-    day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y-%m-%d')))
+    day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y%m%d')))
 
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
@@ -93,6 +94,14 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
         # find all 'PT' and 'NM' studies for a day (specified as YYYYMMDD for the PACS)
         df_studies = find_studies_for_day(config, day.strftime('%Y%m%d'), ['PT', 'NM'])
+
+        # if specified by the config, filter for patient IDs
+        if config['retrieve']['debug_patient_ids'] != '*':
+            patientIDs = config['retrieve']['debug_patient_ids'].split(',')
+            logging.warning('Restricting search to studies with patient IDs in [{}]'
+                .format(','.join(patientIDs)))
+            df_studies = df_studies.query('`Patient ID` in @patientIDs').copy()
+
         # abort if no studies provided as input
         if df_studies is None or len(df_studies) == 0:
             logging.warning('Warning at {}: no studies found'.format(day_str))
@@ -106,58 +115,15 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         logging.warning('Warning at {}: no series found'.format(day_str))
         return
 
-    # try to fetch the info for the series in an iterative way
-    i_try = 0
-    n_retry = config['retrieve'].getint('n_retry_per_day')
-    n_series_per_batch = config['retrieve'].getint('n_series_per_batch')
-    # make sure we try at least once
-    if n_retry < 1: n_retry = 1
-    for i_try in range(n_retry):
-        # get all series that need to get more info
-        df_series_no_info = df_series[
-            (df_series['Start Time'].isnull())
-            | (df_series['End Time'].isnull())
-            | (df_series['Machine'] == '')
-            | (df_series['Machine'].isnull())].copy()
-        # process the series that need info as batches
-        for i_series in range(0, len(df_series_no_info), n_series_per_batch):
-            i_batch_start = i_series
-            i_batch_end = min(len(df_series_no_info), i_series + n_series_per_batch)
-            # limit the maximum number of series that is queried at once
-            df_series_no_info_batch = df_series_no_info.iloc[i_batch_start:i_batch_end, :].copy()
-            # go through each non-fetched series and find information about them
-            logging.info('Fetching info for {} series, trial {}, batch {} - {}'
-                .format(len(df_series_no_info_batch), i_try, i_batch_start, i_batch_end - 1))
-            df_series_fetched = fetch_info_for_series(config, df_series_no_info_batch)
-            # get all series that have something wrong/missing from the series that were just fetched
-            df_series_fetched_no_info = df_series_fetched[
-                (df_series_fetched['Start Time'].isnull())
-                | (df_series_fetched['End Time'].isnull())
-                | (df_series_fetched['Machine'] == '')
-                | (df_series_fetched['Machine'].isnull())]
-            # exclude (from the fetched series DataFrame) all series that do not have info
-            df_series_with_info = df_series_fetched.loc[
-                ~df_series_fetched.index.isin(df_series_fetched_no_info.index), :]
-            # exclude (from the main DataFrame) all series that were just fetched and that have some info
-            df_series = df_series.loc[~df_series.index.isin(df_series_with_info.index), :]
-            # add to the main DataFrame all the series that were just fetched and that have some info
-            df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
-            df_series = df_series.drop_duplicates('Series Instance UID')
+    # if specified by the config, filter for patient IDs
+    if config['retrieve']['debug_patient_ids'] != '*':
+        patientIDs = config['retrieve']['debug_patient_ids'].split(',')
+        logging.warning('Restricting search to studies with patient IDs in [{}]'
+            .format(','.join(patientIDs)))
+        df_series = df_series.query('`Patient ID` in @patientIDs').copy()
 
-    # remove all duplicates
-    df_series = df_series.drop_duplicates('Series Instance UID')
-    # get all series that have something wrong/missing from the series
-    df_series_failed = df_series[
-        (df_series['Start Time'].isnull())
-        | (df_series['End Time'].isnull())
-        | (df_series['Machine'] == '')
-        | (df_series['Machine'].isnull())
-        | (df_series['Institution Name'] == '')
-        | (df_series['Institution Name'] == 'NONE')
-        | (df_series['Institution Name'].isnull())]
-    # exclude (from the main DataFrame) all series that failed
-    df_series = df_series.loc[~df_series.index.isin(df_series_failed.index), :]
-    logging.warning('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
+    # fetch the information for the series by batches from the PACS
+    df_series, df_series_failed = fetch_info_for_series_with_batches(config, df_series)
 
     # make sure the save directory exists
     if not os.path.exists(day_save_dir_path): os.makedirs(day_save_dir_path)
@@ -236,10 +202,11 @@ def find_series_for_studies(config, df_studies):
 
     # go through each study
     logging.warning('Finding all series for {} studie(s)'.format(len(df_studies)))
-    for i_study in range(len(df_studies)):
+    df_studies = df_studies.reset_index(drop=True)
+    for study_ind in df_studies.index:
 
         # find all series of the current study
-        df_series_for_study = find_series_for_study(config, df_studies.iloc[i_study])
+        df_series_for_study = find_series_for_study(config, df_studies.loc[study_ind, :])
         if df_series_for_study is None or len(df_series_for_study) <= 0:
             logging.warning('Skipping study because there are no usable Series associated with it')
             continue
@@ -273,7 +240,7 @@ def find_series_for_studies(config, df_studies):
         else:
             inst_name = inst_names[0]
         # set the institution name for this study
-        df_studies.loc[i_study, 'Institution Name'] = inst_name
+        df_studies.loc[study_ind, 'Institution Name'] = inst_name
 
         # if this instiution name is not in the list of accepted institution names, skip it
         if inst_name.lower().replace(' ', '') not in accepted_inst_names:
@@ -288,6 +255,16 @@ def find_series_for_studies(config, df_studies):
     df_series['Start Time'] = None
     df_series['End Time'] = None
     df_series['Machine'] = None
+
+    # re-order the columns according to the config
+    ordered_columns =  config['retrieve']['series_column_order'].split(',')
+    unique_columns = set()
+    add_to_unique_list = unique_columns.add
+    columns = [
+        col for col in ordered_columns + df_series.columns.tolist()
+        if not (col in unique_columns or add_to_unique_list(col))
+        and col in df_series.columns]
+    df_series = df_series[columns]
 
     # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
     n_max_series_per_day = int(config['retrieve']['debug_n_max_series_per_day'])
@@ -381,10 +358,96 @@ def find_series_for_study(config, study_row):
 
     # drop unwanted columns, sort and display
     df_series = df_series.drop(config['retrieve']['to_drop_columns_series'].split('\n'), axis=1, errors='ignore')
+    df_series = df_series.rename(columns={'Series Date': 'Date'})
     df_series.sort_values(sort_columns, inplace=True)
     df_series.reset_index(drop=True, inplace=True)
 
     return df_series
+
+def fetch_info_for_series_with_batches(config, df_series):
+    """
+    Fetch some information (start & end time, machine, etc.) for batches of series.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        df_series (DataFrame):          a pandas DataFrame holding the series
+    Returns:
+        df_series (DataFrame):          a pandas DataFrame holding the series
+        df_series_failed (DataFrame):   a pandas DataFrame holding the failed series
+    """
+
+    # try to fetch the info for the series in an iterative way
+    i_try = 0
+    n_retry = config['retrieve'].getint('n_retry_per_day')
+    n_series_per_batch = config['retrieve'].getint('n_series_per_batch')
+    # make sure we try at least once
+    if n_retry < 1: n_retry = 1
+    for i_try in range(n_retry):
+        # get all series that need to get more info
+        df_series_no_info = df_series[
+            (df_series['Start Time'].isnull())
+            | (df_series['End Time'].isnull())
+            | (df_series['Machine'] == '')
+            | (df_series['Machine'].isnull())].copy()
+        # process the series that need info as batches
+        for i_series in range(0, len(df_series_no_info), n_series_per_batch):
+            i_batch_start = i_series
+            i_batch_end = min(len(df_series_no_info), i_series + n_series_per_batch)
+            # limit the maximum number of series that is queried at once
+            df_series_no_info_batch = df_series_no_info.iloc[i_batch_start:i_batch_end, :].copy()
+            # go through each non-fetched series and find information about them
+            logging.info('Fetching info for {} series, trial {}, batch {} - {}'
+                .format(len(df_series_no_info_batch), i_try, i_batch_start, i_batch_end - 1))
+            df_series_fetched = fetch_info_for_series(config, df_series_no_info_batch)
+            # get all series that have something wrong/missing from the series that were just fetched
+            df_series_fetched_no_info = df_series_fetched[
+                (df_series_fetched['Start Time'].isnull())
+                | (df_series_fetched['End Time'].isnull())
+                | (df_series_fetched['Machine'] == '')
+                | (df_series_fetched['Machine'].isnull())]
+            # exclude (from the fetched series DataFrame) all series that do not have info
+            df_series_with_info = df_series_fetched.loc[
+                ~df_series_fetched.index.isin(df_series_fetched_no_info.index), :]
+            # exclude (from the main DataFrame) all series that were just fetched and that have some info
+            df_series = df_series.loc[~df_series.index.isin(df_series_with_info.index), :]
+            # add to the main DataFrame all the series that were just fetched and that have some info
+            df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
+            df_series = df_series.drop_duplicates('Series Instance UID')
+
+    # remove all duplicates
+    df_series = df_series.drop_duplicates('Series Instance UID')
+    # get all series that have something wrong/missing from the series
+    df_series_failed = df_series[
+        (df_series['Start Time'].isnull())
+        | (df_series['End Time'].isnull())
+        | (df_series['Machine'] == '')
+        | (df_series['Machine'].isnull())
+        | (df_series['Institution Name'] == '')
+        | (df_series['Institution Name'] == 'NONE')
+        | (df_series['Institution Name'].isnull())]
+    # exclude (from the main DataFrame) all series that failed
+    df_series = df_series.loc[~df_series.index.isin(df_series_failed.index), :]
+    logging.warning('Found {} failed series and {} successful series'.format(len(df_series_failed), len(df_series)))
+
+    # re-order the columns according to the config
+    ordered_columns =  config['retrieve']['series_column_order'].split(',')
+    unique_columns = set()
+    add_to_unique_list = unique_columns.add
+    columns = [
+        col for col in ordered_columns + df_series.columns.tolist()
+        if not (col in unique_columns or add_to_unique_list(col))
+        and col in df_series.columns]
+    df_series = df_series[columns]
+    # sort the rows
+    df_series.sort_values(['Date', 'Start Time', 'Patient ID', 'Machine', 'Series Description'], inplace=True)
+    df_series.reset_index(drop=True, inplace=True)
+
+    # reorder columns and sort the rows also for the failed series, if any
+    if df_series_failed is not None and len(df_series_failed) > 0:
+        df_series_failed = df_series_failed[columns]
+        df_series_failed.sort_values(['Date', 'Start Time', 'Patient ID', 'Machine', 'Series Description'], inplace=True)
+        df_series_failed.reset_index(drop=True, inplace=True)
+
+    return df_series, df_series_failed
 
 def fetch_info_for_series(config, df_series):
     """
@@ -396,11 +459,8 @@ def fetch_info_for_series(config, df_series):
         df_series (DataFrame): a pandas DataFrame holding the series
     """
 
-    # list of field names to extract for each modality
-    to_fetch_fields_ctpt = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName',
-        'AcquisitionTime', 'Modality']
-    to_fetch_fields_nm = ['SeriesInstanceUID', 'PatientID', 'InstanceNumber', 'ManufacturerModelName',
-        'AcquisitionTime', 'Modality', 'ActualFrameDuration', 'NumberOfFrames', '0x00540032', '0x00540052']
+    # list of field names to extract
+    to_fetch_fields = config['retrieve']['DICOM_tags_to_fetch'].split(',')
 
     # create subsets of the DataFrame based on the modality
     df_series_ctpt = df_series[df_series['Modality'].isin(['PT', 'CT'])]
@@ -413,7 +473,7 @@ def fetch_info_for_series(config, df_series):
     if len(df_series_ctpt) > 0:
         # prepare the CT/PT queries for the first instance (first image)
         query_dicts_ctpt = list(df_series_ctpt.apply(lambda row: {
-            'SeriesDate': row['Series Date'],
+            'SeriesDate': row['Date'],
             'PatientID': row['Patient ID'],
             'SeriesInstanceUID': row['Series Instance UID'],
             'InstanceNumber': '1'
@@ -423,43 +483,47 @@ def fetch_info_for_series(config, df_series):
         if df_last_frames is None or len(df_last_frames) > 0:
             query_dicts_ctpt.extend(
                 df_last_frames.apply(lambda row: {
-                    'SeriesDate': row['Series Date'],
+                    'SeriesDate': row['Date'],
                     'PatientID': row['Patient ID'],
                     'SeriesInstanceUID': row['Series Instance UID'],
                     'InstanceNumber': row['Number of Series Related Instances']
                 }, axis=1))
         # fetch the CT/PT data
         logging.warning('Getting CT/PT data ({} queries)'.format(len(query_dicts_ctpt)))
-        df_info_ctpt = get_data(config, query_dicts_ctpt, to_fetch_fields_ctpt)
+        df_info_ctpt = get_data(config, query_dicts_ctpt, to_fetch_fields)
 
     # if there are some NM rows to query
     if len(df_series_nm) > 0:
         # prepare the NM queries for the first instance (first image)
         query_dicts_nm = list(df_series_nm.apply(lambda row: {
-            'SeriesDate': row['Series Date'],
+            'SeriesDate': row['Date'],
             'PatientID': row['Patient ID'],
             'SeriesInstanceUID': row['Series Instance UID']
         }, axis=1))
         # fetch the NM data
         logging.warning('Getting NM data ({} queries)'.format(len(query_dicts_nm)))
-        df_info_nm = get_data(config, query_dicts_nm, to_fetch_fields_nm)
+        df_info_nm = get_data(config, query_dicts_nm, to_fetch_fields)
 
     # process the fetched info and merge it back into the main df_series DataFrame
-    df_series = process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
+    df_series = process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_info_nm)
 
     return df_series
 
-def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm):
+def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_info_nm):
     """
     Process the fetched info for each series (get machine name, start & end time, etc.) and merge this info
         back into the main DataFrame (df_series).
     Args:
+        config (dict): a dictionary holding all the necessary parameters
         df_series (DataFrame): a pandas DataFrame holding the series
         df_info_ctpt (DataFrame): a pandas DataFrame holding the fetched info from the images for CT&PT
         df_info_nm (DataFrame): a pandas DataFrame holding the fetched info from the images for NM
     Returns:
         df_series (str): a pandas DataFrame holding the series
     """
+
+    # list of field names to extract
+    to_fetch_fields = config['retrieve']['DICOM_tags_to_fetch'].split(',')
 
     # Process PT/CT images
     if len(df_info_ctpt) > 0:
@@ -476,6 +540,8 @@ def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
         # clean up the start times
         df_info_ctpt_extended.loc[:, 'AcquisitionTime'] = df_info_ctpt_extended.loc[:, 'AcquisitionTime']\
             .apply(lambda t: str(t).split('.')[0])
+        df_info_ctpt_extended.loc[:, 'ContentTime'] = df_info_ctpt_extended.loc[:, 'ContentTime']\
+            .apply(lambda t: str(t).split('.')[0])
 
         # regroup the first and last instance rows on a single row
         df_info_ctpt_merged = df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] == 1]\
@@ -488,9 +554,26 @@ def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
                 'SeriesInstanceUID': 'Series Instance UID',
                 'PatientID': 'Patient ID',
                 'ManufacturerModelName': 'Machine',
+                'SeriesDate': 'Date',
                 'AcquisitionTime_start': 'Start Time',
                 'AcquisitionTime_end': 'End Time'})\
             .drop(columns=['InstanceNumber_start', 'InstanceNumber_end'])
+
+        # drop columns where all values are the same
+        df_info_ctpt_clean_nonan = df_info_ctpt_clean.replace(np.nan, '')
+        for f in to_fetch_fields:
+            # if the _start and _end columns are both present
+            if f + '_start' in df_info_ctpt_clean_nonan.columns and f + '_end' in df_info_ctpt_clean_nonan.columns:
+                # check if all values are the same
+                all_same = all(df_info_ctpt_clean_nonan[f + '_start'] == df_info_ctpt_clean_nonan[f + '_end'])
+                logging.debug(f"Checking for duplicated columns for {f}: {all_same}")
+                # if all values are the same, keep only one column
+                if all_same:
+                    df_info_ctpt_clean[f] = df_info_ctpt_clean[f + '_start']
+                    df_info_ctpt_clean = df_info_ctpt_clean.drop(columns=[f + '_start', f + '_end'])
+
+        # remove non-informative columns (all NaNs)
+        df_info_ctpt_clean = df_info_ctpt_clean.dropna(how='all', axis=1)
 
         # make sure that Start Time is before End Time for each rows, otherwise invert them
         s = pd.to_datetime(df_info_ctpt_clean['Start Time'], format='%H%M%S')
@@ -521,8 +604,10 @@ def process_and_merge_info_back_into_series(df_series, df_info_ctpt, df_info_nm)
         df_info_nm_clean = df_info_nm.rename(columns={
                 'SeriesInstanceUID': 'Series Instance UID',
                 'PatientID': 'Patient ID',
+                'SeriesDate': 'Date',
                 'ManufacturerModelName': 'Machine'})\
             [['Series Instance UID', 'Patient ID', 'Modality', 'Start Time', 'End Time', 'Machine']]
+
         # merge the info into the series DataFrame
         df_series = df_series.merge(df_info_nm_clean, on=['Patient ID', 'Series Instance UID', 'Modality'],
             how='outer')
