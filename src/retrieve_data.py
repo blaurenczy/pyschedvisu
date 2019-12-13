@@ -67,8 +67,9 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
     # create the path where the input day's data would be stored
     day_str = day.strftime('%Y%m%d')
-    day_save_dir_path = os.path.join(config['retrieve']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))
-    day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y%m%d')))
+    day_save_dir_path = os.path.join(config['retrieve']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))\
+        .replace('\\', '/')
+    day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y%m%d'))).replace('\\', '/')
 
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
@@ -397,7 +398,7 @@ def fetch_info_for_series_with_batches(config, df_series):
             # go through each non-fetched series and find information about them
             logging.info('Fetching info for {} series, trial {}, batch {} - {}'
                 .format(len(df_series_no_info_batch), i_try, i_batch_start, i_batch_end - 1))
-            df_series_fetched = fetch_info_for_series(config, df_series_no_info_batch)
+            df_series_fetched, df_series_excl = fetch_info_for_series(config, df_series_no_info_batch)
             # get all series that have something wrong/missing from the series that were just fetched
             df_series_fetched_no_info = df_series_fetched[
                 (df_series_fetched['Start Time'].isnull())
@@ -411,7 +412,10 @@ def fetch_info_for_series_with_batches(config, df_series):
             df_series = df_series.loc[~df_series.index.isin(df_series_with_info.index), :]
             # add to the main DataFrame all the series that were just fetched and that have some info
             df_series = pd.concat([df_series, df_series_with_info], sort=True).reset_index(drop=True)
+
             df_series = df_series.drop_duplicates('Series Instance UID')
+            # remove series that have the wrong image type from the list of series to fetch
+            df_series = df_series[~df_series['Series Instance UID'].isin(df_series_excl['SeriesInstanceUID'])]
 
     # remove all duplicates
     df_series = df_series.drop_duplicates('Series Instance UID')
@@ -505,28 +509,49 @@ def fetch_info_for_series(config, df_series):
         df_info_nm = get_data(config, query_dicts_nm, to_fetch_fields)
 
     # process the fetched info and merge it back into the main df_series DataFrame
-    df_series = process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_info_nm)
+    df_series, df_series_to_exclude = process_and_merge_info_back_into_series(
+                                        config, df_series, df_info_ctpt, df_info_nm)
 
-    return df_series
+    return df_series, df_series_to_exclude
 
 def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_info_nm):
     """
     Process the fetched info for each series (get machine name, start & end time, etc.) and merge this info
         back into the main DataFrame (df_series).
     Args:
-        config (dict): a dictionary holding all the necessary parameters
-        df_series (DataFrame): a pandas DataFrame holding the series
-        df_info_ctpt (DataFrame): a pandas DataFrame holding the fetched info from the images for CT&PT
-        df_info_nm (DataFrame): a pandas DataFrame holding the fetched info from the images for NM
+        config (dict):              a dictionary holding all the necessary parameters
+        df_series (DataFrame):      a pandas DataFrame holding the series
+        df_info_ctpt (DataFrame):   a pandas DataFrame holding the fetched info from the images for CT&PT
+        df_info_nm (DataFrame):     a pandas DataFrame holding the fetched info from the images for NM
     Returns:
-        df_series (str): a pandas DataFrame holding the series
+        df_series (str):            a pandas DataFrame holding the series
+        df_series_to_exclude (str): a pandas DataFrame holding the series to exclude from search
     """
 
     # list of field names to extract
     to_fetch_fields = config['retrieve']['DICOM_tags_to_fetch'].split(',')
 
+    # store series to exclude based on the image type
+    df_series_to_exclude_ctpt, df_series_to_exclude_nm = pd.DataFrame(), pd.DataFrame()
+
     # Process PT/CT images
     if len(df_info_ctpt) > 0:
+
+        # fix missing SeriesDate
+        df_info_ctpt.loc[df_info_ctpt['SeriesDate'].isnull(), 'SeriesDate'] = \
+            df_info_ctpt.loc[df_info_ctpt['SeriesDate'].isnull(), 'AcquisitionDate']
+        df_info_ctpt = df_info_ctpt.drop(columns='AcquisitionDate')
+
+        # check if there are any series to exclude based on the image type
+        is_image_types_secondary_ctpt = df_info_ctpt['ImageType'].apply(str).str.match('.*SECONDARY.*')
+        df_series_to_exclude_ctpt = df_info_ctpt[is_image_types_secondary_ctpt]
+        if len(df_series_to_exclude_ctpt) > 0:
+            logging.warning('Found {} CT/PT series to exclude based on the Image Type for day {}:'
+                .format(len(df_series_to_exclude_ctpt), df_series_to_exclude_ctpt.iloc[0]['SeriesDate']))
+            df_info_ctpt = df_info_ctpt[~is_image_types_secondary_ctpt].copy()
+            logging.warning('  [Series Descriptions]:')
+            for descr in df_series_to_exclude_ctpt['SeriesDescription'].tolist():
+                logging.warning(f'    - "{descr}"')
 
         # get the images with a single instance
         single_instances_UIDs = df_series.loc[
@@ -546,8 +571,8 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
         # regroup the first and last instance rows on a single row
         df_info_ctpt_merged = df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] == 1]\
             .merge(df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] > 1],
-                   on=['SeriesInstanceUID', 'PatientID', 'ManufacturerModelName', 'Modality'],
-                   suffixes=['_start', '_end'])
+                   on=['SeriesInstanceUID', 'SeriesDate', 'PatientID', 'ManufacturerModelName',
+                   'Modality'], suffixes=['_start', '_end'])
 
         # rename the columns and keep the appropriate ones
         df_info_ctpt_clean = df_info_ctpt_merged.rename(columns={
@@ -566,12 +591,6 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
         df_inv[['ContentTime_start', 'ContentTime_end']] = df_inv[['ContentTime_end', 'ContentTime_start']]
         df_info_ctpt_clean[s > e] = df_inv
 
-        # fix FDG Cerveau series where AcquisitionTime is not correct, therefore ContentTime needs to be used
-        end_times = pd.to_datetime(df_info_ctpt_clean['End Time'], format='%H%M%S')
-        end_content_times = pd.to_datetime(df_info_ctpt_clean['ContentTime_end'], format='%H%M%S')
-        wrong_end_times = df_info_ctpt_clean[end_content_times > end_times]
-        df_info_ctpt_clean.loc[wrong_end_times.index, 'End Time'] = wrong_end_times['ContentTime_end']
-
         # drop columns where all values are the same
         df_info_ctpt_clean_nonan = df_info_ctpt_clean.replace(np.nan, '')
         for f in to_fetch_fields:
@@ -585,8 +604,17 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
                     df_info_ctpt_clean[f] = df_info_ctpt_clean[f + '_start']
                     df_info_ctpt_clean = df_info_ctpt_clean.drop(columns=[f + '_start', f + '_end'])
 
+        # fix FDG Cerveau series where AcquisitionTime is not correct, therefore ContentTime needs to be used
+        df_fdg_cerveau = df_info_ctpt_clean[df_info_ctpt_clean['SeriesDescription'].str.match('.*FDG Cerveau.*')]
+        if len(df_fdg_cerveau) > 0:
+            end_times = pd.to_datetime(df_fdg_cerveau['End Time'], format='%H%M%S')
+            end_content_times = pd.to_datetime(df_fdg_cerveau['ContentTime_end'], format='%H%M%S')
+            wrong_end_times = df_fdg_cerveau[end_content_times > end_times]
+            df_info_ctpt_clean.loc[wrong_end_times.index, 'End Time'] = wrong_end_times['ContentTime_end']
+
         # remove non-informative columns (all NaNs)
         df_info_ctpt_clean = df_info_ctpt_clean.dropna(how='all', axis=1)
+        df_info_ctpt_clean = df_info_ctpt_clean.drop(columns='SeriesDescription')
 
         # make sure that Start Time is before End Time for each rows, otherwise invert them
         s = pd.to_datetime(df_info_ctpt_clean['Start Time'], format='%H%M%S')
@@ -596,16 +624,36 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
         df_info_ctpt_clean[s > e] = df_inv
 
         # merge the info into the series DataFrame
-        df_series = df_series.merge(df_info_ctpt_clean, on=['Patient ID', 'Series Instance UID', 'Modality'],
+        df_series = df_series.merge(df_info_ctpt_clean, on=['Patient ID', 'Date', 'Series Instance UID', 'Modality'],
             how='outer')
 
         # keep only the relevant columns
-        for f in ['Start Time', 'End Time', 'Machine']:
-            df_series[f] = df_series[f + '_y'].where(df_series[f + '_y'].notnull(), df_series[f + '_x'])
-            df_series.drop(columns=[f + '_y', f + '_x'], inplace=True)
+        columns = df_series.columns
+        columns_y= [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
+        for col_y in columns_y:
+            col = col_y.replace('_y', '')
+            col_x = col_y.replace('_y', '_x')
+            df_series[col] = df_series[col_y].where(df_series[col_y].notnull(), df_series[col_x])
+            df_series.drop(columns=[col_y, col_x], inplace=True)
 
     # Process NM images
     if len(df_info_nm) > 0:
+        # fix missing SeriesDate
+        df_info_nm.loc[df_info_nm['SeriesDate'].isnull(), 'SeriesDate'] = \
+            df_info_nm.loc[df_info_nm['SeriesDate'].isnull(), 'AcquisitionDate']
+        df_info_nm = df_info_nm.drop(columns='AcquisitionDate')
+
+        # check if there are any series to exclude based on the image type
+        is_image_types_secondary_nm = df_info_nm['ImageType'].apply(str).str.match('.*SECONDARY.*')
+        df_series_to_exclude_nm = df_info_nm[is_image_types_secondary_nm]
+        if len(df_series_to_exclude_nm) > 0:
+            logging.warning('Found {} NM series to exclude based on the Image Type for day {}:'
+                .format(len(df_series_to_exclude_nm), df_series_to_exclude_nm.iloc[0]['SeriesDate']))
+            df_info_nm = df_info_nm[~is_image_types_secondary_nm].copy()
+            logging.warning('  [Series Descriptions]:')
+            for descr in df_series_to_exclude_nm['SeriesDescription'].tolist():
+                logging.warning(f'    - "{descr}"')
+
         # clean up the start times
         df_info_nm.loc[:, 'AcquisitionTime'] = df_info_nm.loc[:, 'AcquisitionTime']\
             .apply(lambda t: str(t).split('.')[0])
@@ -613,26 +661,32 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
         df_info_nm['Start Time'] = df_info_nm['AcquisitionTime']
         # call a function to calculate the End Times
         df_info_nm['End Time'] = df_info_nm.apply(get_NM_series_end_time, axis=1)
-        # rename the columns and select the appropriate ones
+        # rename the columns
         df_info_nm_clean = df_info_nm.rename(columns={
                 'SeriesInstanceUID': 'Series Instance UID',
                 'PatientID': 'Patient ID',
                 'SeriesDate': 'Date',
                 'ManufacturerModelName': 'Machine'})\
-            [['Series Instance UID', 'Patient ID', 'Modality', 'Start Time', 'End Time', 'Machine']]
+            .drop(columns=['SeriesDescription', '0x00540032','0x00540052'])
 
         # merge the info into the series DataFrame
-        df_series = df_series.merge(df_info_nm_clean, on=['Patient ID', 'Series Instance UID', 'Modality'],
+        df_series = df_series.merge(df_info_nm_clean, on=['Patient ID', 'Date', 'Series Instance UID', 'Modality'],
             how='outer')
-        # keep only the relevant columns
-        for f in ['Start Time', 'End Time', 'Machine']:
-            df_series[f] = df_series[f + '_y'].where(df_series[f + '_y'].notnull(), df_series[f + '_x'])
-            df_series.drop(columns=[f + '_y', f + '_x'], inplace=True)
+        columns = df_series.columns
+        columns_y= [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
+        for col_y in columns_y:
+            col = col_y.replace('_y', '')
+            col_x = col_y.replace('_y', '_x')
+            df_series[col] = df_series[col_y].where(df_series[col_y].notnull(), df_series[col_x])
+            df_series.drop(columns=[col_y, col_x], inplace=True)
+
+    # merge together the excluded series from both modality groups
+    df_series_to_exclude = pd.concat([df_series_to_exclude_ctpt, df_series_to_exclude_nm], sort=True)
 
     # remove duplicates
     df_series = df_series.drop_duplicates('Series Instance UID')
 
-    return df_series
+    return df_series, df_series_to_exclude
 
 def get_NM_series_end_time(series_row):
     """
@@ -822,6 +876,11 @@ def get_data(config, query_dicts, to_fetch_fields, delete_data=True):
     Returns:
         df (DataFrame): a DataFrame containing all retrieved data
     """
+
+
+    # make sure download folder exists
+    if not os.path.exists(config['retrieve']['dicom_temp_dir']):
+        os.makedirs(config['retrieve']['dicom_temp_dir'])
 
     # make sure download folder is empty
     delete_DICOM_files(config)

@@ -27,7 +27,7 @@ def load_transform_and_save_data_from_files(config):
     studies_save_path = config['extract']['studies_db_save_path']
     series_save_path = config['extract']['series_db_save_path']
     # initialize the studies and series DataFrames
-    df_studies, df_series = None, None
+    df_studies, df_studies_query, df_series, df_series_query = None, None, None, None
     # initialize the list of already_processed_days
     already_processed_days_studies, already_processed_days_series, already_processed_days = [], [], []
     # get the list of holiday days of Switzerland in the Canton de Vaud
@@ -84,7 +84,7 @@ def load_transform_and_save_data_from_files(config):
         else:
             # remove any rows belonging to the same day, if any
             df_series = df_series[df_series['Date'] != day.strftime('%Y%m%d')]
-            df_series = pd.concat([df_series, df_series_for_day])\
+            df_series = pd.concat([df_series, df_series_for_day], sort=False)\
                 .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])\
                 .reset_index(drop=True)
 
@@ -133,15 +133,16 @@ def load_transform_and_save_data_from_files(config):
         # save the updated DataFrame
         df_series.to_pickle(series_save_path)
 
+    # create the query string to return the relevant studies and series
+    query_str = 'Date >= "{}" & Date <= "{}"'.format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+    logging.info(f'Query string: {query_str}')
+
     # get the relevant studies from the main studies DataFrame
-    df_studies_query = df_studies.query('Date >= "{}" & Date <= "{}"'
-        .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
+    df_studies_query = df_studies.query(query_str).copy()
     logging.info('Returning {} studies from the total of {} studies'.format(len(df_studies_query), len(df_studies)))
     # get the relevant series from the main series DataFrame
-    df_series_query = None
     if df_series is not None and len(df_series) > 0:
-        df_series_query = df_series.query('Date >= "{}" & Date <= "{}"'
-            .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))).copy()
+        df_series_query = df_series.query(query_str).copy()
         logging.info('Returning {} series from the total of {} series'.format(len(df_series_query), len(df_series)))
 
     return df_studies_query, df_series_query
@@ -185,6 +186,7 @@ def load_data_from_files(config):
                 # load the failed series if required by the config
                 failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
                 if config['extract'].getboolean('debug_load_failed_series') and os.path.isfile(failed_day_save_file_path):
+                    logging.warning('Loading failed series for {}'.format(day_str))
                     df_failed_series = pd.read_pickle(failed_day_save_file_path)
                     # concatenate the failed series into the global DataFrame
                     df_series = pd.concat([df_series, df_failed_series], sort=True)
@@ -292,8 +294,8 @@ def mark_retakes(config, df_series):
             logging.info(f'Found {n_inbetween} series that are inbetween the start ({study_start}) ' +
                 f'and end of study ({study_end}) {study_str}')
             new_series_split = df_series_for_study[df_series_for_study['Start Time'] > inbetween_start]\
-                .sort_values('Start Time').iloc[0]
-            df_series_split = df_series_split.append(new_series_split)
+                .sort_values('Start Time')
+            df_series_split = df_series_split.append(new_series_split.iloc[0])
 
         # if there is no splitting indices
         if len(df_series_split) == 0:
@@ -438,8 +440,6 @@ def DEPRECATED_show_series_groupby(config, df_series):
     df_count_series = pd.DataFrame(df_series_grouped_by_series.count())
     df_count_series = pd.DataFrame(df_count_series.rename(
         columns = {'Series Instance UID': 'Number of Series'})['Number of Series'])
-    logging.info('Number of series for each sub-group')
-    display(df_count_series)
 
     # aggregate series to count the number of studies for each sub-group
     df_series_grouped_by_study = df_series.groupby(groupby_columns + ['SUID'])
@@ -447,8 +447,6 @@ def DEPRECATED_show_series_groupby(config, df_series):
     df_count_studies = df_count_studies.groupby(groupby_columns).count()
     df_count_studies = pd.DataFrame(df_count_studies.rename(
         columns = {'SUID': 'Number of Studies'})['Number of Studies'])
-    logging.info('Number of studies for each sub-group')
-    display(df_count_studies)
 
     # aggregate series to count the number of series per day per machine
     groupby_columns = ['Date', 'Machine Group']
@@ -457,8 +455,6 @@ def DEPRECATED_show_series_groupby(config, df_series):
     df_count_series_day = pd.DataFrame(df_count_series_day.rename(
         columns = {'Series Instance UID': 'Number of Series'})['Number of Series'])
     df_count_series_day = df_count_series_day.unstack()
-    logging.info('Number of series for each sub-group and each day')
-    display(df_count_series_day)
 
     # aggregate series to count the number of studies per day per machine
     df_series_grouped_by_study_day = df_series.groupby(groupby_columns + ['SUID'])
@@ -467,8 +463,6 @@ def DEPRECATED_show_series_groupby(config, df_series):
     df_count_study_day = pd.DataFrame(df_count_study_day.rename(
         columns = {'Series Instance UID': 'Number of Studies'})['Number of Studies'])
     df_count_study_day = df_count_study_day.unstack()
-    logging.info('Number of studies for each sub-group and each day')
-    display(df_count_study_day)
 
     # aggregate series to count the number of studies per weekday per machine
     df_count_study_weekday = df_count_study_day.copy()
@@ -476,14 +470,3 @@ def DEPRECATED_show_series_groupby(config, df_series):
         dt.strptime(d, '%Y%m%d').strftime("%A") for d in df_count_study_weekday.index],
         categories=['Monday','Tuesday','Wednesday','Thursday','Friday'], ordered=True)
     df_count_study_weekday = df_count_study_weekday.groupby('Weekday').sum()
-    logging.info('Number of studies for each sub-group and each weekday')
-    display(df_count_study_weekday)
-
-    field_list = ['Institution Name', 'Machine', 'Machine Group', 'Modality',
-        'Series Description', 'Study Description', 'Patient ID', 'i_take']
-    for field in field_list:
-        logging.info('Number of *Series* groupped by "{}"'.format(field))
-        display(df_series.groupby(field)['SUID'].count())
-        logging.info('Number of *Studies* groupped by "{}"'.format(field))
-        display(df_series.groupby([field, 'SUID']).count().reset_index().groupby(field)['SUID'].count())
-        logging.info('='*160)

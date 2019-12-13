@@ -57,6 +57,9 @@ def create_report(config):
 
         # get the data for the current machine
         df_machine = df.query('Machine == @machine')
+        if len(df_machine) == 0:
+            logging.error(f'Could not create report for {machine} since there is no data.')
+            continue
 
         # create the report, section by section
         create_header(config, fig, machine)
@@ -259,6 +262,7 @@ def _set_schedule_y_lims(config, df):
     Returns:
         None
     """
+
     # calculate the best y limits
     start_times = df['Start Time'].apply(lambda st: pd.to_datetime(st, format='%H%M%S'))
     end_times = df['End Time'].apply(lambda et: pd.to_datetime(et, format='%H%M%S'))

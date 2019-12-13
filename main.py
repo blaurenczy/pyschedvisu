@@ -6,6 +6,9 @@ This is the master script running all the steps.
 
 import logging
 import os
+import sys
+sys.path.append('src')
+
 import pandas as pd
 from datetime import datetime as dt
 from configparser import ConfigParser
