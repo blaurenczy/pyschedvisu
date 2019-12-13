@@ -510,7 +510,7 @@ def create_daily_table(config, fig, machine, df):
             .format(day.strftime('%Y%m%d'), next_day.strftime('%Y%m%d'), machine))
         n_days_in_range = len(set(df_day['Date']))
         if n_days_in_range == 0:
-            logging.error('Problem with day {}: n_days_in_range = {}, len(df_day) = {}!'
+            logging.warning('Problem with day {}: n_days_in_range = {}, len(df_day) = {}!'
                 .format(day.strftime("%Y%m%d"), n_days_in_range, len(df_day)))
             n_days_in_range = 1
         n_max_studies_per_day = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', ''))

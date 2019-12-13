@@ -629,12 +629,21 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
 
         # keep only the relevant columns
         columns = df_series.columns
-        columns_y= [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
+        columns_y = [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
         for col_y in columns_y:
             col = col_y.replace('_y', '')
             col_x = col_y.replace('_y', '_x')
             df_series[col] = df_series[col_y].where(df_series[col_y].notnull(), df_series[col_x])
             df_series.drop(columns=[col_y, col_x], inplace=True)
+
+        # keep only the relevant columns
+        columns = df_series.columns
+        columns_s = [col_s for col_s in columns if col_s[-6:] == '_start' and col_s.replace('_start', '_end') in columns]
+        for col_s in columns_s:
+            col = col_s.replace('_start', '')
+            col_end = col_s.replace('_start', '_end')
+            df_series[col] = df_series[col_s].where(df_series[col_s].notnull(), df_series[col_end])
+            df_series.drop(columns=[col_s, col_end], inplace=True)
 
     # Process NM images
     if len(df_info_nm) > 0:
@@ -666,19 +675,35 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
                 'SeriesInstanceUID': 'Series Instance UID',
                 'PatientID': 'Patient ID',
                 'SeriesDate': 'Date',
-                'ManufacturerModelName': 'Machine'})\
+                'ManufacturerModelName': 'Machine',
+                '0x00180050': 'SliceThickness',
+                '0x00189931': 'scanPositionStart',
+                '0x00189932': 'scanPositionEnd',
+                '0x00181302': 'ScanLength',
+                '0x00201002': 'ImagesInAcquisition' })\
             .drop(columns=['SeriesDescription', '0x00540032','0x00540052'])
 
         # merge the info into the series DataFrame
         df_series = df_series.merge(df_info_nm_clean, on=['Patient ID', 'Date', 'Series Instance UID', 'Modality'],
             how='outer')
+
+        # keep only the relevant columns
         columns = df_series.columns
-        columns_y= [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
+        columns_y = [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
         for col_y in columns_y:
             col = col_y.replace('_y', '')
             col_x = col_y.replace('_y', '_x')
             df_series[col] = df_series[col_y].where(df_series[col_y].notnull(), df_series[col_x])
             df_series.drop(columns=[col_y, col_x], inplace=True)
+
+        # keep only the relevant columns
+        columns = df_series.columns
+        columns_s = [col_s for col_s in columns if col_s[-6:] == '_start' and col_s.replace('_start', '_end') in columns]
+        for col_s in columns_s:
+            col = col_s.replace('_start', '')
+            col_end = col_s.replace('_start', '_end')
+            df_series[col] = df_series[col_s].where(df_series[col_s].notnull(), df_series[col_end])
+            df_series.drop(columns=[col_s, col_end], inplace=True)
 
     # merge together the excluded series from both modality groups
     df_series_to_exclude = pd.concat([df_series_to_exclude_ctpt, df_series_to_exclude_nm], sort=True)
