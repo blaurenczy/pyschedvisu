@@ -614,7 +614,8 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
 
         # remove non-informative columns (all NaNs)
         df_info_ctpt_clean = df_info_ctpt_clean.dropna(how='all', axis=1)
-        df_info_ctpt_clean = df_info_ctpt_clean.drop(columns='SeriesDescription')
+        if 'SeriesDescription' in df_info_ctpt_clean:
+            df_info_ctpt_clean = df_info_ctpt_clean.drop(columns='SeriesDescription')
 
         # make sure that Start Time is before End Time for each rows, otherwise invert them
         s = pd.to_datetime(df_info_ctpt_clean['Start Time'], format='%H%M%S')
