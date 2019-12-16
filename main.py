@@ -5,12 +5,16 @@ This is the master script running all the steps.
 """
 
 import logging
+
 import os
+os.chdir('H:/Mes Documents/ServiceCivil2019/schedvisu/')
+
 import sys
 sys.path.append('src')
 
 import pandas as pd
 from datetime import datetime as dt
+from datetime import timedelta
 from configparser import ConfigParser
 
 import retrieve_data
@@ -129,8 +133,19 @@ def get_day_range(config, reduce_freq=False):
         days_range (daterange): the pandas daterange going from the starting to then ending day
     """
 
-    start_date = dt.strptime(config['main']['start_date'], '%Y%m%d')
-    end_date = dt.strptime(config['main']['end_date'], '%Y%m%d')
+    # if auto mode for report
+    if config['main']['end_date'] == 'auto' and config['main']['mode'] == 'report':
+        end_date = dt.today() - timedelta(days=dt.today().weekday() - 4)
+        if end_date > dt.today(): end_date = end_date - timedelta(days=7)
+    else:
+        end_date = dt.strptime(config['main']['end_date'], '%Y%m%d')
+
+    # if auto mode for report
+    if config['main']['start_date'] == 'auto' and config['main']['mode'] == 'report':
+        start_date = dt(2016,1,1) 
+    else:
+        start_date = dt.strptime(config['main']['start_date'], '%Y%m%d')
+
     days_range = pd.date_range(start_date, end_date, freq='B')
 
     # if a reduced frequency is required, recreate the range with a frequency depending on the number of days to show

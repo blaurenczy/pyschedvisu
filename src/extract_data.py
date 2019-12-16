@@ -31,13 +31,20 @@ def load_transform_and_save_data_from_files(config):
     # initialize the list of already_processed_days
     already_processed_days_studies, already_processed_days_series, already_processed_days = [], [], []
     # get the list of holiday days of Switzerland in the Canton de Vaud
-    holiday_days = holidays.Switzerland(prov='VD')
+    holiday_days = holidays.Switzerland(prov='VD', years=range(start_date.year, end_date.year + 1))
 
     # check if the some studies have already been extracted
     if os.path.isfile(studies_save_path):
         logging.info('Reading studies database: save file found at "{}", loading data'.format(studies_save_path))
         # if yes, load them
         df_studies = pd.read_pickle(studies_save_path)
+
+        # if specified by the config, filter for patient IDs
+        if config['retrieve']['debug_patient_ids'] != '*':
+            patientIDs = config['retrieve']['debug_patient_ids'].split(',')
+            logging.warning('Restricting search to studies with patient IDs in [{}]'.format(','.join(patientIDs)))
+            df_studies = df_studies.query('`Patient ID` in @patientIDs').copy()
+
         # get the list of the days that have already been processed
         already_processed_days_studies = list(set(df_studies['Date'].tolist()))
 
@@ -46,6 +53,14 @@ def load_transform_and_save_data_from_files(config):
         logging.info('Reading series database: save file found at "{}", loading data'.format(series_save_path))
         # if yes, load them
         df_series = pd.read_pickle(series_save_path)
+
+        # if specified by the config, filter for patient IDs
+        if config['retrieve']['debug_patient_ids'] != '*':
+            patientIDs = config['retrieve']['debug_patient_ids'].split(',')
+            logging.warning('Restricting search to series with patient IDs in [{}]'.format(','.join(patientIDs)))
+            df_series = df_series.query('`Patient ID` in @patientIDs').copy()
+
+        # get the list of the days that have already been processed
         already_processed_days_series = list(set(df_series['Date'].tolist()))
 
     # get the list of the days that are required by the config's day range but are not in the studies DataFrame
@@ -73,7 +88,7 @@ def load_transform_and_save_data_from_files(config):
 
         # load in the data
         df_series_for_day = load_data_from_files(local_config)
-        if df_series_for_day is None: continue
+        if df_series_for_day is None or len(df_series_for_day) == 0: continue
         # mark the rektakes and the machine group for each series
         df_series_for_day = mark_machine_group(local_config, df_series_for_day)
         df_series_for_day = mark_retakes(local_config, df_series_for_day)
@@ -128,6 +143,8 @@ def load_transform_and_save_data_from_files(config):
 
     # if there was any change to the main DataFrame
     if len(days_to_process) > 0:
+        df_studies = df_studies.drop_duplicates(['Start Time', 'End Time', 'Machine', 'Patient ID'])
+
         # save the updated DataFrame
         df_studies.to_pickle(studies_save_path)
         # save the updated DataFrame
@@ -207,6 +224,12 @@ def load_data_from_files(config):
 
     if df_series is None: return None
 
+    # if specified by the config, filter for patient IDs
+    if config['retrieve']['debug_patient_ids'] != '*':
+        patientIDs = config['retrieve']['debug_patient_ids'].split(',')
+        logging.warning('Restricting search to series with patient IDs in [{}]'.format(','.join(patientIDs)))
+        df_series = df_series.query('`Patient ID` in @patientIDs').copy()
+
     # create an index for the concatenated series
     df_series = df_series.reset_index(drop=True)
 
@@ -270,32 +293,31 @@ def mark_retakes(config, df_series):
         # get the series where a split should be done
         df_series_split = df_series_for_study[df_series_for_study['time_to_prev'] > timedelta(seconds=study_split_thresh)]
 
-        # also check whether there is a series from another study inbetween our study:
-        # get all the other series that are for the same day, same machine, but different Study Instance UID
-        df_series_other = df_series[
-            (df_series['Study Instance UID'] != sUID)
-            & (df_series['Date'] == df_series_for_study.iloc[0]['Date'])
-            & (df_series['Machine Group'] == df_series_for_study.iloc[0]['Machine Group'])]
-        # get the start and end time of these other series
-        start_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
-        end_times_other = pd.to_datetime(df_series_other['End Time'], format=FMT)
-        # get the start and end time of the current study's series
-        study_start = min(df_series_for_study['Start Time'])
-        study_end = max(df_series_for_study['End Time'])
-        # get all the series that have their times inbetween our study
-        df_series_inbetween = df_series_other[(start_times_other > study_start) & (end_times_other < study_end)]
-        n_inbetween = len(df_series_inbetween)
-        # if any inbetween series found
-        if n_inbetween > 0:
-            # get the start time of the inbetween series
-            inbetween_start = min(pd.to_datetime(df_series_inbetween['Start Time'], format=FMT))
-            logging.debug(f'Found {n_inbetween} series that are inbetween the start & end of study {study_str}')
-            # get the series from our study that splits our study (last series before the inbetween series)
-            logging.info(f'Found {n_inbetween} series that are inbetween the start ({study_start}) ' +
-                f'and end of study ({study_end}) {study_str}')
-            new_series_split = df_series_for_study[df_series_for_study['Start Time'] > inbetween_start]\
-                .sort_values('Start Time')
-            df_series_split = df_series_split.append(new_series_split.iloc[0])
+        # # also check whether there is a series from another study inbetween our study:
+        # # get all the other series that are for the same day, same machine, but different Study Instance UID
+        # df_series_other = df_series[
+        #     (df_series['Study Instance UID'] != sUID)
+        #     & (df_series['Date'] == df_series_for_study.iloc[0]['Date'])
+        #     & (df_series['Machine Group'] == df_series_for_study.iloc[0]['Machine Group'])]
+        # # get the start and end time of these other series
+        # start_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
+        # end_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
+        # # get the start and end time of the current study's series
+        # study_start = min(df_series_for_study['Start Time'])
+        # study_end = max(df_series_for_study['Start Time'])
+        # # get all the series that have their times inbetween our study
+        # df_series_inbetween = df_series_other[(start_times_other > study_start) & (end_times_other < study_end)]
+        # n_inbetween = len(df_series_inbetween)
+        # # if any inbetween series found
+        # if n_inbetween > 0:
+        #     # get the start time of the inbetween series
+        #     inbetween_start = min(pd.to_datetime(df_series_inbetween['Start Time'], format=FMT))
+        #     # get the series from our study that splits our study (last series before the inbetween series)
+        #     logging.info('Found {} series that are inbetween the start ({}) and end of study ({}): {}'
+        #         .format(n_inbetween, study_start.strftime('%H:%M:%S'), study_end.strftime('%H:%M:%S'), study_str))
+        #     new_series_split = df_series_for_study[df_series_for_study['Start Time'] > inbetween_start]\
+        #         .sort_values('Start Time')
+        #     df_series_split = df_series_split.append(new_series_split.iloc[0])
 
         # if there is no splitting indices
         if len(df_series_split) == 0:

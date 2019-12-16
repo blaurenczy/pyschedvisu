@@ -7,6 +7,7 @@ import signal
 import time
 import os
 import shutil
+import holidays
 
 from datetime import datetime as dt
 from datetime import timedelta
@@ -71,6 +72,9 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         .replace('\\', '/')
     day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y%m%d'))).replace('\\', '/')
 
+    holiday_days = holidays.Switzerland(prov='VD', years=day.year)
+    holiday_days.append(dt(day.year, 12, 31))
+
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
 
@@ -88,6 +92,12 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
         else:
             logging.info('Skipping   {}: save file found at "{}", nothing to do'.format(day_str, day_save_file_path))
             return
+
+    # do not search for holiday days
+    elif day in holiday_days:
+        logging.info('Skipping   {}: save file not found at "{}", but this is a holiday.'
+            .format(day_str, day_save_file_path))
+        return
 
     # if the current date has not already been retrieved and saved, process it
     else:
@@ -202,14 +212,14 @@ def find_series_for_studies(config, df_studies):
     df_series = pd.DataFrame()
 
     # go through each study
-    logging.warning('Finding all series for {} studie(s)'.format(len(df_studies)))
+    logging.info('Finding all series for {} studie(s)'.format(len(df_studies)))
     df_studies = df_studies.reset_index(drop=True)
     for study_ind in df_studies.index:
 
         # find all series of the current study
         df_series_for_study = find_series_for_study(config, df_studies.loc[study_ind, :])
         if df_series_for_study is None or len(df_series_for_study) <= 0:
-            logging.warning('Skipping study because there are no usable Series associated with it')
+            logging.info('Skipping study because there are no usable Series associated with it')
             continue
 
         # DEBUGGING: in case a restriction on the number of studies should be done for faster processing (for debugging)
@@ -217,7 +227,7 @@ def find_series_for_studies(config, df_studies):
         if n_max_series != -1: df_series_for_study = df_series_for_study.iloc[0 : n_max_series, :]
 
         if 'Institution Name' not in df_series_for_study.columns:
-            logging.warning('Skipping study because there is no "Institution Name" information')
+            logging.info('Skipping study because there is no "Institution Name" information')
             continue
 
         # get the list of valid/accepted institution names from the config
@@ -231,7 +241,7 @@ def find_series_for_studies(config, df_studies):
 
             # check if any of these multiple institution names is valid / accepted
             if all([inst_name.lower().replace(' ', '') not in accepted_inst_names for inst_name in inst_names]):
-                logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format('" & "'.join(inst_names)))
+                logging.info('Skipping study because it is not from CHUV (but from "{}")'.format('" & "'.join(inst_names)))
                 continue
 
             # if any of the institution name is valid, continue with a "mixed" institution name
@@ -245,7 +255,7 @@ def find_series_for_studies(config, df_studies):
 
         # if this instiution name is not in the list of accepted institution names, skip it
         if inst_name.lower().replace(' ', '') not in accepted_inst_names:
-            logging.warning('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
+            logging.info('Skipping study because it is not from CHUV (but from "{}")'.format(inst_name))
             continue
 
         logging.debug('Study from {}: appending {} series'.format(inst_name, len(df_series_for_study)))
@@ -607,44 +617,50 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
         # fix FDG Cerveau series where AcquisitionTime is not correct, therefore ContentTime needs to be used
         df_fdg_cerveau = df_info_ctpt_clean[df_info_ctpt_clean['SeriesDescription'].str.match('.*FDG Cerveau.*')]
         if len(df_fdg_cerveau) > 0:
-            end_times = pd.to_datetime(df_fdg_cerveau['End Time'], format='%H%M%S')
-            end_content_times = pd.to_datetime(df_fdg_cerveau['ContentTime_end'], format='%H%M%S')
-            wrong_end_times = df_fdg_cerveau[end_content_times > end_times]
-            df_info_ctpt_clean.loc[wrong_end_times.index, 'End Time'] = wrong_end_times['ContentTime_end']
+            # get the start times of each FDG cerveau row
+            start_times = pd.to_datetime(df_fdg_cerveau['Start Time'], format='%H%M%S')
+            # get the number of seconds for each row
+            duration_seconds = [int(60 * minutes[0]) for minutes in df_fdg_cerveau['SeriesDescription']\
+                .str.extract('.*FDG Cerveau (.+)min.*').astype(int).values]
+            # calculate new end times
+            end_times = [(start_times.iloc[i] + timedelta(seconds=duration_seconds[i])).strftime('%H%M%S')
+                for i in range(len(start_times))]
+            df_info_ctpt_clean.loc[df_fdg_cerveau.index, 'End Time'] = end_times
 
         # remove non-informative columns (all NaNs)
         df_info_ctpt_clean = df_info_ctpt_clean.dropna(how='all', axis=1)
-        if 'SeriesDescription' in df_info_ctpt_clean:
+        if len(df_info_ctpt_clean) > 0:
+
             df_info_ctpt_clean = df_info_ctpt_clean.drop(columns='SeriesDescription')
 
-        # make sure that Start Time is before End Time for each rows, otherwise invert them
-        s = pd.to_datetime(df_info_ctpt_clean['Start Time'], format='%H%M%S')
-        e = pd.to_datetime(df_info_ctpt_clean['End Time'], format='%H%M%S')
-        df_inv = df_info_ctpt_clean[s > e].copy()
-        df_inv[['Start Time','End Time']] = df_inv[['End Time','Start Time']]
-        df_info_ctpt_clean[s > e] = df_inv
+            # make sure that Start Time is before End Time for each rows, otherwise invert them
+            s = pd.to_datetime(df_info_ctpt_clean['Start Time'], format='%H%M%S')
+            e = pd.to_datetime(df_info_ctpt_clean['End Time'], format='%H%M%S')
+            df_inv = df_info_ctpt_clean[s > e].copy()
+            df_inv[['Start Time','End Time']] = df_inv[['End Time','Start Time']]
+            df_info_ctpt_clean[s > e] = df_inv
 
-        # merge the info into the series DataFrame
-        df_series = df_series.merge(df_info_ctpt_clean, on=['Patient ID', 'Date', 'Series Instance UID', 'Modality'],
-            how='outer')
+            # merge the info into the series DataFrame
+            df_series = df_series.merge(df_info_ctpt_clean, on=['Patient ID', 'Date', 'Series Instance UID', 'Modality'],
+                how='outer')
 
-        # keep only the relevant columns
-        columns = df_series.columns
-        columns_y = [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
-        for col_y in columns_y:
-            col = col_y.replace('_y', '')
-            col_x = col_y.replace('_y', '_x')
-            df_series[col] = df_series[col_y].where(df_series[col_y].notnull(), df_series[col_x])
-            df_series.drop(columns=[col_y, col_x], inplace=True)
+            # keep only the relevant columns
+            columns = df_series.columns
+            columns_y = [col_y for col_y in columns if col_y[-2:] == '_y' and col_y.replace('_y', '_x') in columns]
+            for col_y in columns_y:
+                col = col_y.replace('_y', '')
+                col_x = col_y.replace('_y', '_x')
+                df_series[col] = df_series[col_y].where(df_series[col_y].notnull(), df_series[col_x])
+                df_series.drop(columns=[col_y, col_x], inplace=True)
 
-        # keep only the relevant columns
-        columns = df_series.columns
-        columns_s = [col_s for col_s in columns if col_s[-6:] == '_start' and col_s.replace('_start', '_end') in columns]
-        for col_s in columns_s:
-            col = col_s.replace('_start', '')
-            col_end = col_s.replace('_start', '_end')
-            df_series[col] = df_series[col_s].where(df_series[col_s].notnull(), df_series[col_end])
-            df_series.drop(columns=[col_s, col_end], inplace=True)
+            # keep only the relevant columns
+            columns = df_series.columns
+            columns_s = [col_s for col_s in columns if col_s[-6:] == '_start' and col_s.replace('_start', '_end') in columns]
+            for col_s in columns_s:
+                col = col_s.replace('_start', '')
+                col_end = col_s.replace('_start', '_end')
+                df_series[col] = df_series[col_s].where(df_series[col_s].notnull(), df_series[col_end])
+                df_series.drop(columns=[col_s, col_end], inplace=True)
 
     # Process NM images
     if len(df_info_nm) > 0:
@@ -780,6 +796,9 @@ def get_NM_series_end_time(series_row):
     # if a duration info could be extracted, calculate the duration from the last instance's
     #   start time, as there could be multiple instances, even for a 'NM' series
     start_time_str = str(series_row['AcquisitionTime']).split('.')[0]
+    if start_time_str is None or len(start_time_str) == '' or start_time_str == 'nan':
+        return None
+
     start_time = dt.strptime(start_time_str, '%H%M%S')
     end_time = start_time + timedelta(seconds=series_duration)
     end_time_str = end_time.strftime('%H%M%S')

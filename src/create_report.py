@@ -7,8 +7,10 @@ import math
 import matplotlib.pyplot as plt
 from matplotlib.cbook import get_sample_data
 from matplotlib.patches import FancyBboxPatch
+from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.colors as mc
 import colorsys
+from copy import deepcopy
 from random import random
 from datetime import date, timedelta
 from datetime import datetime as dt
@@ -26,59 +28,125 @@ def create_report(config):
         None
     """
 
-    # load the relevant studies
-    logging.info("Reading in studies")
-    df, _ = extract_data.load_transform_and_save_data_from_files(config)
+    # get the date ranges
+    start_date_global, end_date_global, _ = main.get_day_range(config)
 
-    # abort if no studies could be loaded
-    if df is None or len(df) == 0:
-        logging.error('Could not create report since there is no data.')
-        return
+    # output a single page with all the data in one report per machine
+    if config['main']['mode'] == 'single':
+        date_ranges = [{'start': start_date_global, 'end': end_date_global}]
 
-    # exclude some machines and do some grouping up
-    df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
-    df = df[df['Machine'] != 'mixed cases']
+    # output a multiples pages with the data in multiple report per machine and per date ranges
+    if config['main']['mode'] == 'report':
 
-    start_date, end_date, _ = main.get_day_range(config)
-    week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
-    week_numbers_str = '-'.join(week_numbers)
-    report_type = get_report_type(week_numbers)
+        prev_friday = start_date_global - timedelta(days=start_date_global.weekday() - 4)
+        if prev_friday > start_date_global: prev_friday = prev_friday - timedelta(days=7)
+        previous_monday_1W = prev_friday - timedelta(days= 5 +  0 * 7 - 1)
+        previous_monday_2W = prev_friday - timedelta(days= 5 +  1 * 7 - 1)
+        previous_monday_4W = prev_friday - timedelta(days= 5 +  3 * 7 - 1)
+        previous_monday_3M = prev_friday - timedelta(days= 5 + 11 * 7 - 1)
+        previous_monday_6M = prev_friday - timedelta(days= 5 + 23 * 7 - 1)
+        previous_monday_1Y = prev_friday.replace(day=1).replace(month=1)
+        previous_monday_4Y = previous_monday_1Y.replace(year=prev_friday.year - 3)
 
-    # either go through all available machines, or use the list specified by the config
-    machines_list = set(df['Machine'])
-    if config['draw']['debug_single_machine'] != '*':
-        machines_list = config['draw']['debug_single_machine'].split(',')
+        date_ranges = [
+            { 'start': previous_monday_1W, 'end': prev_friday },
+            { 'start': previous_monday_2W, 'end': prev_friday },
+            { 'start': previous_monday_4W, 'end': prev_friday },
+            { 'start': previous_monday_3M, 'end': prev_friday },
+            { 'start': previous_monday_6M, 'end': prev_friday },
+            { 'start': previous_monday_1Y, 'end': prev_friday },
+            { 'start': previous_monday_4Y, 'end': prev_friday }
+        ]
 
-    # go through each machine
-    for machine in machines_list:
+    # create the multi-page report
+    now_str = dt.now().strftime('%Y-%m-%d_%Hh%Mm%Ss')
+    with PdfPages(f'outputs/report_{now_str}.pdf') as pdf:
 
-        # create a matplotlib figure with the right aspect ratio
-        fig = plt.figure(figsize=[8.27, 11.69])
+        # either go through all available machines, or use the list specified by the config
+        machines_list = set([machine for machine in config['machines'].keys() if 'NoCT' not in machine])
+        if config['draw']['debug_single_machine'] != '*':
+            machines_list = config['draw']['debug_single_machine'].split(',')
 
-        # get the data for the current machine
-        df_machine = df.query('Machine == @machine')
-        if len(df_machine) == 0:
-            logging.error(f'Could not create report for {machine} since there is no data.')
-            continue
+        # go through each machine
+        for machine in machines_list:
 
-        # create the report, section by section
-        create_header(config, fig, machine)
-        #create_notes(config, fig)
-        create_schedule(config, fig, machine, df_machine)
-        create_daily_table(config, fig, machine, df_machine)
-        create_violin(config, fig, machine, df_machine)
-        create_stat_table(config, fig, machine, df_machine)
+            # go through each date range
+            for date_range in date_ranges:
 
-        logging.info("Saving PDF file")
-        fig.savefig('outputs/output_{}_{}_{}_{}.pdf'
-            .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
-            start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
-            orientation='portrait', papertype='a4', format='pdf')
+                # get the date ranges
+                local_config = deepcopy(config)
+                local_config['main']['start_date'] = date_range['start'].strftime('%Y%m%d')
+                local_config['main']['end_date'] = date_range['end'].strftime('%Y%m%d')
+                start_date, end_date, _ = main.get_day_range(local_config)
 
-        fig.savefig('outputs/output_{}_{}_{}_{}.png'
-            .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
-            start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
-            orientation='portrait', papertype='a4', format='png')
+                # load the relevant studies
+                logging.info("Reading in studies")
+                df, _ = extract_data.load_transform_and_save_data_from_files(local_config)
+
+                # get the data for the current machine
+                if df is None or len(df) == 0:
+                    logging.error('No data for {} {} - {} at these dates.'.format(machine,
+                    date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
+                    continue
+
+                # exclude some machines and do some grouping up
+                df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
+                df = df[df['Machine'] != 'mixed cases']
+
+                # get the data for the current machine
+                df_machine = df.query('Machine == @machine')
+                if len(df_machine) == 0:
+                    logging.error('No data for {} {} - {} for this machine at these dates.'.format(machine,
+                    date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
+                    continue
+
+                # get the report type string
+                week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
+                week_numbers_str = '-'.join(week_numbers)
+                report_type = get_report_type(week_numbers)
+
+                logging.warning('Creating report for {} for {} - {}'.format(machine,
+                    start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+                # create a matplotlib figure with the right aspect ratio
+                fig = plt.figure(figsize=[8.27, 11.69])
+
+                # create the report, section by section
+                create_header(local_config, fig, machine)
+                #create_notes(local_config, fig)
+                create_schedule(local_config, fig, machine, df_machine)
+                create_daily_table(local_config, fig, machine, df_machine)
+                create_violin(local_config, fig, machine, df_machine)
+                create_stat_table(local_config, fig, machine, df_machine)
+
+                if config['draw'].getboolean('debug_save_as_image'):
+                    plt.show()
+                    logging.info("Saving PDF file")
+                    fig.savefig('outputs/output_{}_{}_{}_{}.pdf'
+                        .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
+                        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
+                        orientation='portrait', papertype='a4', format='pdf')
+                    fig.savefig('outputs/output_{}_{}_{}_{}.png'
+                        .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
+                        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
+                        orientation='portrait', papertype='a4', format='png')
+
+                    # still save the page
+                    pdf.savefig()
+
+                # if no saving to image is required, close the plot
+                else:
+                    # save the page
+                    pdf.savefig()
+                    plt.close()
+
+        d = pdf.infodict()
+        d['Title'] = 'Rapport SchedVisu'
+        d['Author'] = 'Balazs Laurenczy'
+        d['Subject'] = 'Utilisation des machines PET & SPECT du CHUV'
+        d['Keywords'] = 'PET SPECT CHUV SchedVIsu'
+        d['CreationDate'] = dt.today()
+        d['ModDate'] = dt.today()
 
 def create_header(config, fig, machine):
     """
@@ -137,10 +205,12 @@ def get_report_type(week_numbers):
         report_type = 'hebdomadaire'
     else:
         week_diff = int(week_numbers[1]) - int(week_numbers[0])
-        if week_diff == 1:                  report_type = 'bimensuel'
-        elif week_diff == 3:                report_type = 'mensuel'
-        elif week_diff in (51, 52, 53):     report_type = 'annuel'
-        else:                               report_type = 'de {} semaines'.format(week_diff + 1)
+        if week_diff == 1:                          report_type = 'bimensuel'
+        elif week_diff == (1 * 4 - 1):              report_type = 'mensuel'
+        elif week_diff == (3 * 4 - 1):              report_type = 'trimestriel'
+        elif week_diff == (6 * 4 - 1):              report_type = 'semestriel'
+        elif week_diff in (50, 51, 52, 53, 54):     report_type = 'annuel'
+        else:                                       report_type = 'de {} semaines'.format(week_diff + 1)
 
     return report_type
 
@@ -510,8 +580,9 @@ def create_daily_table(config, fig, machine, df):
             .format(day.strftime('%Y%m%d'), next_day.strftime('%Y%m%d'), machine))
         n_days_in_range = len(set(df_day['Date']))
         if n_days_in_range == 0:
-            logging.warning('Problem with day {}: n_days_in_range = {}, len(df_day) = {}!'
-                .format(day.strftime("%Y%m%d"), n_days_in_range, len(df_day)))
+            if machine != 'Millennium':
+                logging.warning('Problem with day {}: n_days_in_range = {}, len(df_day) = {}!'
+                    .format(day.strftime("%Y%m%d"), n_days_in_range, len(df_day)))
             n_days_in_range = 1
         n_max_studies_per_day = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', ''))
         n_max_studies = n_max_studies_per_day * n_days_in_range
@@ -574,7 +645,7 @@ def create_daily_table(config, fig, machine, df):
 
     headers = ['Date', 'Slot', 'Exam.', 'Trous', 'Util.']
     # if we are not in a daily display mode, add a row for the number of days counting
-    if days_range.freq.name != 'B': headers.insert(2, '# Jours')
+    if days_range.freq.name != 'B': headers.insert(1, 'Jours')
     header_colors = ['lightgray'] * len(headers)
 
     # plot the table
@@ -663,6 +734,7 @@ def create_violin(config, fig, machine, df):
     results = vio_ax.violinplot(data, x_positions, showmeans=True, showextrema=True, showmedians=False)
     plt.ylabel('Durée (minutes)')
     plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=8)
+    plt.xlim([-0.5, 9.5])
     ylims = plt.ylim()
     y_minutes = range(0, int(ylims[1] / 60) + 1, 10)
     plt.yticks(ticks=[x * 60 for x in y_minutes], labels=y_minutes)
