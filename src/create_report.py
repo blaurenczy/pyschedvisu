@@ -48,15 +48,21 @@ def create_report(config):
         previous_monday_1Y = prev_friday.replace(day=1).replace(month=1)
         previous_monday_4Y = previous_monday_1Y.replace(year=prev_friday.year - 3)
 
-        date_ranges = [
-            { 'start': previous_monday_1W, 'end': prev_friday },
-            { 'start': previous_monday_2W, 'end': prev_friday },
-            { 'start': previous_monday_4W, 'end': prev_friday },
-            { 'start': previous_monday_3M, 'end': prev_friday },
-            { 'start': previous_monday_6M, 'end': prev_friday },
-            { 'start': previous_monday_1Y, 'end': prev_friday },
-            { 'start': previous_monday_4Y, 'end': prev_friday }
-        ]
+        date_ranges = []
+        if 'hebdomadaire'   in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_1W, 'end': prev_friday })
+        if 'bimensuel'      in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_2W, 'end': prev_friday })
+        if 'mensuel'        in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_4W, 'end': prev_friday })
+        if 'trimestriel'    in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_3M, 'end': prev_friday })
+        if 'semestriel'     in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_6M, 'end': prev_friday })
+        if 'annuel'         in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_1Y, 'end': prev_friday })
+        if 'longueduree'    in config['main']['report_range'].split(','):
+            date_ranges.append({ 'start': previous_monday_4Y, 'end': prev_friday })
 
     # create the multi-page report
     now_str = dt.now().strftime('%Y-%m-%d_%Hh%Mm%Ss')
@@ -64,7 +70,7 @@ def create_report(config):
     with PdfPages(pdf_output_path) as pdf:
 
         # either go through all available machines, or use the list specified by the config
-        machines_list = set([machine for machine in config['machines'].keys() if 'NoCT' not in machine])
+        machines_list = sorted(list(set([machine for machine in config['machines'].keys() if 'NoCT' not in machine])))
         if config['draw']['debug_single_machine'] != '*':
             machines_list = config['draw']['debug_single_machine'].split(',')
 
@@ -78,62 +84,13 @@ def create_report(config):
                 local_config = deepcopy(config)
                 local_config['main']['start_date'] = date_range['start'].strftime('%Y%m%d')
                 local_config['main']['end_date'] = date_range['end'].strftime('%Y%m%d')
-                start_date, end_date, _ = main.get_day_range(local_config)
 
-                # load the relevant studies
-                logging.info("Reading in studies")
-                df, _ = extract_data.load_transform_and_save_data_from_files(local_config)
+                # create one page of the report
+                create_page(local_config, machine)
 
-                # get the data for the current machine
-                if df is None or len(df) == 0:
-                    logging.error('No data for {} {} - {} at these dates.'.format(machine,
-                    date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
-                    continue
-
-                # exclude some machines and do some grouping up
-                df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
-                df = df[df['Machine'] != 'mixed cases']
-
-                # get the data for the current machine
-                df_machine = df.query('Machine == @machine')
-                if len(df_machine) == 0:
-                    logging.error('No data for {} {} - {} for this machine at these dates.'.format(machine,
-                    date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
-                    continue
-
-                # get the report type string
-                report_type = get_report_type(start_date, end_date)
-                logging.warning('Creating report for {} for {} - {}: "{}"'.format(machine,
-                    start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), report_type))
-
-                # create a matplotlib figure with the right aspect ratio
-                fig = plt.figure(figsize=[8.27, 11.69])
-
-                # create the report, section by section
-                create_header(local_config, fig, machine)
-                #create_notes(local_config, fig)
-                create_schedule(local_config, fig, machine, df_machine)
-                create_daily_table(local_config, fig, machine, df_machine)
-                create_violin(local_config, fig, machine, df_machine)
-                create_stat_table(local_config, fig, machine, df_machine)
-
-                if config['draw'].getboolean('debug_save_as_image'):
-                    #plt.show()
-                    logging.info("Saving PDF file")
-                    im_output_path = '{}/output_{}_{}_{}_{}'.format(config['path']['output_dir'],
-                        machine.lower().replace(' ', ''), report_type.replace(' ', ''),
-                        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
-                    fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
-                    fig.savefig(im_output_path + '.png', orientation='portrait', papertype='a4', format='png')
-
-                    # still save the page
-                    pdf.savefig()
-
-                # if no saving to image is required, close the plot
-                else:
-                    # save the page
-                    pdf.savefig()
-                    plt.close()
+                # save the page
+                pdf.savefig()
+                plt.close()
 
         d = pdf.infodict()
         d['Title'] = 'Rapport SchedVisu'
@@ -142,6 +99,65 @@ def create_report(config):
         d['Keywords'] = 'PET SPECT CHUV SchedVIsu'
         d['CreationDate'] = dt.today()
         d['ModDate'] = dt.today()
+
+def create_page(config, machine):
+    """
+    Create one page of the report
+    Args:
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+        machine (str):  a string specifying the currently processed machine
+    Returns:
+        None
+    """
+
+    # get the date ranges
+    start_date, end_date, _ = main.get_day_range(config)
+
+    # load the relevant studies
+    logging.info("Reading in studies")
+    df, _ = extract_data.load_transform_and_save_data_from_files(config)
+
+    # get the data for the current machine
+    if df is None or len(df) == 0:
+        logging.error('No data for {} {} - {} at these dates.'.format(machine,
+            date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
+        return
+
+    # exclude some machines and do some grouping up
+    df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
+    df = df[df['Machine'] != 'mixed cases']
+
+    # get the data for the current machine
+    df_machine = df.query('Machine == @machine')
+    if len(df_machine) == 0:
+        logging.error('No data for {} {} - {} for this machine at these dates.'.format(machine,
+        date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
+        return
+
+    # get the report type string
+    report_type = get_report_type(start_date, end_date)
+    logging.warning('Creating report for {} for {} - {}: "{}"'.format(machine,
+        start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), report_type))
+
+    # create a matplotlib figure with the right aspect ratio
+    fig = plt.figure(figsize=[8.27, 11.69])
+
+    # create the report, section by section
+    create_header(config, fig, machine)
+    #create_notes(config, fig)
+    create_schedule(config, fig, machine, df_machine)
+    create_daily_table(config, fig, machine, df_machine)
+    create_violin(config, fig, machine, df_machine)
+    create_stat_table(config, fig, machine, df_machine)
+
+    if config['draw'].getboolean('debug_save_as_image'):
+        #plt.show()
+        logging.info("Saving PDF file")
+        im_output_path = '{}/output_{}_{}_{}_{}'.format(config['path']['output_dir'],
+            machine.lower().replace(' ', ''), report_type.replace(' ', ''),
+            start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+        fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
+        fig.savefig(im_output_path + '.png', orientation='portrait', papertype='a4', format='png')
 
 def create_header(config, fig, machine):
     """
@@ -457,7 +473,7 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
 
         # DEBUG show information string
         if config['draw'].getboolean('debug_schedule_show_IPP_string'):
-            plt.text(x + w * 0.1, y + 0.1 * h, '{}: {} - {}: {:.2f}h'
+            plt.text(x + w * 0.1, y + 0.9 * h, '{}: {} - {}: {:.2f}h'
                 .format(*study[['Patient ID', 'Start Time', 'End Time']], duration_hours))
 
 def create_schedule_distribution_plot(config, fig, machine, df):

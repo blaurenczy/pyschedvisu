@@ -445,7 +445,7 @@ def create_description_consensus(config, df_studies):
                 df_studies.loc[df_studies.index.isin(df_studies_match.index), 'Description'] = descr
 
     df_studies.loc[df_studies['Description'].isnull(), 'Description'] = 'OTHER'
-    df_studies = df_studies.drop(columns=['Protocol Name', 'short_descr'])
+    df_studies = df_studies.drop(columns=['Protocol Name', 'short_descr'], errors='ignore')
 
     return df_studies
 
