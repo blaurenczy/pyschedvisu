@@ -31,12 +31,11 @@ def run():
         None
     """
 
-    # create the logger
-    create_logger()
-
     # load the configuration
-    logging.info("Reading configuration")
     config = load_config()
+
+    # create the logger
+    create_logger(config)
 
     try:
         # run the workflow using the date range, settings, parameters, etc. found in the config
@@ -68,11 +67,11 @@ def run_pipeline(config):
     create_report.create_report(config)
     logging.warning("Finished running SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
 
-def create_logger():
+def create_logger(config):
     """
     Create a logger.
     Args:
-        None
+        config (dict): a dictionary holding all the necessary parameters
     Returns:
         None
     """
@@ -81,7 +80,7 @@ def create_logger():
     root = logging.getLogger().handlers = []
     # define the logging format and paths
     logging_format = '%(asctime)s|%(funcName)-30.30s:%(lineno)03s|%(levelname)-7s| %(message)s'
-    logging_dir = os.path.join('logs', '{}'.format(dt.now().strftime('%Y%m')))
+    logging_dir = os.path.join(config['path']['log_dir'], '{}'.format(dt.now().strftime('%Y%m')))
     logging_filename = os.path.join(logging_dir, '{}_schedvisu.log'.format(dt.now().strftime('%Y%m%d_%H%M%S')))
     # make sure the log directory exists
     if not os.path.exists(logging_dir): os.makedirs(logging_dir)
@@ -95,6 +94,11 @@ def create_logger():
     # add the handler to the root logger
     logging.getLogger('').addHandler(console)
 
+    # set debug level based on the configuration file's content
+    logging.getLogger().setLevel(config['main']['debug_level'].upper())
+    # set debug level of pynetdicom based on the configuration file's content
+    logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'].upper())
+
 def load_config():
     """
     Retrieve and save the relevant series from the PACS for all days specified by the config.
@@ -106,18 +110,13 @@ def load_config():
 
     config_path = 'config.ini'
     if not os.path.isfile(config_path):
-        logging.error(f'Could not file config file at "{config_path}".')
+        print(f'ERROR: Could not file config file at "{config_path}".')
         return None
 
     # read in the configuration file
     config = ConfigParser()
     config.optionxform = str
     config.read(config_path)
-
-    # set debug level based on the configuration file's content
-    logging.getLogger().setLevel(config['main']['debug_level'].upper())
-    # set debug level of pynetdicom based on the configuration file's content
-    logging.getLogger('pynetdicom').setLevel(config['main']['pynetdicom_debug_level'].upper())
 
     return config
 
@@ -142,7 +141,7 @@ def get_day_range(config, reduce_freq=False):
 
     # if auto mode for report
     if config['main']['start_date'] == 'auto' and config['main']['mode'] == 'report':
-        start_date = dt(2016,1,1) 
+        start_date = dt(2016,1,1)
     else:
         start_date = dt.strptime(config['main']['start_date'], '%Y%m%d')
 

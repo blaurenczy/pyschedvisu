@@ -38,8 +38,8 @@ def create_report(config):
     # output a multiples pages with the data in multiple report per machine and per date ranges
     if config['main']['mode'] == 'report':
 
-        prev_friday = start_date_global - timedelta(days=start_date_global.weekday() - 4)
-        if prev_friday > start_date_global: prev_friday = prev_friday - timedelta(days=7)
+        prev_friday = end_date_global - timedelta(days=end_date_global.weekday() - 4)
+        if prev_friday > end_date_global: prev_friday = prev_friday - timedelta(days=7)
         previous_monday_1W = prev_friday - timedelta(days= 5 +  0 * 7 - 1)
         previous_monday_2W = prev_friday - timedelta(days= 5 +  1 * 7 - 1)
         previous_monday_4W = prev_friday - timedelta(days= 5 +  3 * 7 - 1)
@@ -60,7 +60,8 @@ def create_report(config):
 
     # create the multi-page report
     now_str = dt.now().strftime('%Y-%m-%d_%Hh%Mm%Ss')
-    with PdfPages(f'outputs/report_{now_str}.pdf') as pdf:
+    pdf_output_path = '{}/report_{}.pdf'.format(config['path']['output_dir'], now_str)
+    with PdfPages(pdf_output_path) as pdf:
 
         # either go through all available machines, or use the list specified by the config
         machines_list = set([machine for machine in config['machines'].keys() if 'NoCT' not in machine])
@@ -101,12 +102,9 @@ def create_report(config):
                     continue
 
                 # get the report type string
-                week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
-                week_numbers_str = '-'.join(week_numbers)
-                report_type = get_report_type(week_numbers)
-
-                logging.warning('Creating report for {} for {} - {}'.format(machine,
-                    start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+                report_type = get_report_type(start_date, end_date)
+                logging.warning('Creating report for {} for {} - {}: "{}"'.format(machine,
+                    start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), report_type))
 
                 # create a matplotlib figure with the right aspect ratio
                 fig = plt.figure(figsize=[8.27, 11.69])
@@ -120,16 +118,13 @@ def create_report(config):
                 create_stat_table(local_config, fig, machine, df_machine)
 
                 if config['draw'].getboolean('debug_save_as_image'):
-                    plt.show()
+                    #plt.show()
                     logging.info("Saving PDF file")
-                    fig.savefig('outputs/output_{}_{}_{}_{}.pdf'
-                        .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
-                        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
-                        orientation='portrait', papertype='a4', format='pdf')
-                    fig.savefig('outputs/output_{}_{}_{}_{}.png'
-                        .format(machine.lower().replace(' ', ''), report_type.replace(' ', ''),
-                        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')),
-                        orientation='portrait', papertype='a4', format='png')
+                    im_output_path = '{}/output_{}_{}_{}_{}'.format(config['path']['output_dir'],
+                        machine.lower().replace(' ', ''), report_type.replace(' ', ''),
+                        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+                    fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
+                    fig.savefig(im_output_path + '.png', orientation='portrait', papertype='a4', format='png')
 
                     # still save the page
                     pdf.savefig()
@@ -163,9 +158,10 @@ def create_header(config, fig, machine):
 
     # analyse the week numbers
     start_date, end_date, _ = main.get_day_range(config)
+    n_days = (end_date - start_date).days
     week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
     week_numbers_str = '-'.join(week_numbers)
-    report_type = get_report_type(week_numbers)
+    report_type = get_report_type(start_date, end_date)
     logging.debug(f"Header content: {report_type}, {week_numbers_str}")
 
     # draw the header text with dates, etc.
@@ -192,25 +188,25 @@ def create_header(config, fig, machine):
     im_logo_ax.axis('off')
 
 
-def get_report_type(week_numbers):
+def get_report_type(start_date, end_date):
     """
     Return the report type ('hebdomadaire', 'bimensuel', 'mensuel', etc.) based on the week numbers provided.
     Args:
-        week_numbers (list of string): A two-element list of strings representing week numbers
+        start_date (datetime):  the starting date
+        end_date (datetime):    the ending date
     Returns:
         report_type (string): a string representing the report type ('hebdomadaire', 'bimensuel', 'mensuel', etc.)
     """
 
-    if len(week_numbers) == 1:
-        report_type = 'hebdomadaire'
-    else:
-        week_diff = int(week_numbers[1]) - int(week_numbers[0])
-        if week_diff == 1:                          report_type = 'bimensuel'
-        elif week_diff == (1 * 4 - 1):              report_type = 'mensuel'
-        elif week_diff == (3 * 4 - 1):              report_type = 'trimestriel'
-        elif week_diff == (6 * 4 - 1):              report_type = 'semestriel'
-        elif week_diff in (50, 51, 52, 53, 54):     report_type = 'annuel'
-        else:                                       report_type = 'de {} semaines'.format(week_diff + 1)
+    n_days = (end_date - start_date).days
+    if   n_days < 1:                            report_type = 'journalier'
+    elif n_days < 7:                            report_type = 'hebdomadaire'
+    elif n_days < 14:                           report_type = 'bimensuel'
+    elif n_days < 31:                           report_type = 'mensuel'
+    elif n_days < 3 * 31:                       report_type = 'trimestriel'
+    elif n_days < 6 * 31:                       report_type = 'semestriel'
+    elif n_days < 365:                          report_type = 'annuel'
+    else:                                       report_type = 'longue durée'
 
     return report_type
 
@@ -366,6 +362,7 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
 
     # get the starting and ending dates, and the days range from the config
     start_date, end_date, days_range = main.get_day_range(config)
+    n_days = (end_date - start_date).days
     # initialize some variables related to the dates
     day_str = day.strftime('%Y%m%d')
 
@@ -407,13 +404,15 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
                     'before end hour of last study {:6.3f}').format('.'.join(study.name.split('.')[-2:]),
                     machine, day_str, start_hour, end_prev_hour))
 
-            # check how long the gap was with previous study
-            gap_duration_hour = start_hour - end_prev_hour
-            gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
-            if gap_duration_hour * 60 >= gap_threshold:
-                # plot a black line to show gaps
-                plt.plot([i_day, i_day], [start_hour - 0.15, end_prev_hour + 0.15],
-                    color='black', linestyle='dashed', linewidth=2)
+            # only plot gaps if we are plotting less than 6 months
+            if n_days < 180:
+                # check how long the gap was with previous study
+                gap_duration_hour = start_hour - end_prev_hour
+                gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
+                if gap_duration_hour * 60 >= gap_threshold:
+                    # plot a black line to show gaps
+                    plt.plot([i_day, i_day], [start_hour - 0.15, end_prev_hour + 0.15],
+                        color='black', linestyle='dashed', linewidth=2)
 
         # get the start and stop times rounded to the minute
         logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}, i_day: {}'

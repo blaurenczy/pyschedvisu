@@ -24,14 +24,17 @@ def load_transform_and_save_data_from_files(config):
     # get the date range from the config
     start_date, end_date, days_range = main.get_day_range(config)
     # initialize the save path's location
-    studies_save_path = config['extract']['studies_db_save_path']
-    series_save_path = config['extract']['series_db_save_path']
+    studies_save_path = config['path']['studies_db_save_path']
+    series_save_path = config['path']['series_db_save_path']
     # initialize the studies and series DataFrames
     df_studies, df_studies_query, df_series, df_series_query = None, None, None, None
     # initialize the list of already_processed_days
     already_processed_days_studies, already_processed_days_series, already_processed_days = [], [], []
     # get the list of holiday days of Switzerland in the Canton de Vaud
     holiday_days = holidays.Switzerland(prov='VD', years=range(start_date.year, end_date.year + 1))
+    for year in range(start_date.year, end_date.year + 1):
+        holiday_days.append(dt(year, 12, 24))
+        holiday_days.append(dt(year, 12, 26))
 
     # check if the some studies have already been extracted
     if os.path.isfile(studies_save_path):
@@ -187,7 +190,7 @@ def load_data_from_files(config):
         try:
 
             # create the path where the input day's data would be stored
-            day_save_dir_path = os.path.join(config['retrieve']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))
+            day_save_dir_path = os.path.join(config['path']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))
             day_str = day.strftime('%Y%m%d')
             day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day_str))
 

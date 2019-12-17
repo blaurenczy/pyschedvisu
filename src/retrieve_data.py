@@ -68,12 +68,15 @@ def retrieve_and_save_single_day_data_from_PACS(config, day):
 
     # create the path where the input day's data would be stored
     day_str = day.strftime('%Y%m%d')
-    day_save_dir_path = os.path.join(config['retrieve']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))\
+    day_save_dir_path = os.path.join(config['path']['data_dir'], day.strftime('%Y'), day.strftime('%Y-%m'))\
         .replace('\\', '/')
     day_save_file_path = os.path.join(day_save_dir_path, '{}.pkl'.format(day.strftime('%Y%m%d'))).replace('\\', '/')
 
+    # get the list of holiday days and add some custom off-days as well
     holiday_days = holidays.Switzerland(prov='VD', years=day.year)
     holiday_days.append(dt(day.year, 12, 31))
+    holiday_days.append(dt(day.year, 12, 24))
+    holiday_days.append(dt(day.year, 12, 26))
 
     # check if the current date has already been retrieved and saved
     if os.path.isfile(day_save_file_path):
@@ -331,17 +334,18 @@ def find_series_for_study(config, study_row):
     df_series = find_data(config, query_ds)
     logging.debug('Found {} series before filtering description'.format(len(df_series)))
     # abort if no result
-    if len(df_series) == 0: return None
+    if df_series is None or len(df_series) == 0: return None
 
     # filter out some Series that are not primary acquisitions (and do not contain any relevant time information)
     indices_to_exclude = []
     # go through each pattern and build the list of rows to exclude
-    for descr_pattern in config['retrieve']['series_descr_patterns_to_exclude'].split('\n'):
-        to_exclude_rows = df_series['Series Description'].str.match(descr_pattern, case=False)
-        # gather all the indices
-        indices_to_exclude.append(to_exclude_rows[to_exclude_rows == True].index)
-    # flatten the list
-    indices_to_exclude = [index for indices in indices_to_exclude for index in indices.values]
+    if 'Series Description' in df_series.columns:
+        for descr_pattern in config['retrieve']['series_descr_patterns_to_exclude'].split('\n'):
+            to_exclude_rows = df_series['Series Description'].str.match(descr_pattern, case=False)
+            # gather all the indices
+            indices_to_exclude.append(to_exclude_rows[to_exclude_rows == True].index)
+        # flatten the list
+        indices_to_exclude = [index for indices in indices_to_exclude for index in indices.values]
     # if there is something to exclude, show a message and drop the rows
     if len(indices_to_exclude) > 0:
         logging.debug('Found {} series to exclude based on their description: "{}"'.format(len(indices_to_exclude),
@@ -620,8 +624,8 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
             # get the start times of each FDG cerveau row
             start_times = pd.to_datetime(df_fdg_cerveau['Start Time'], format='%H%M%S')
             # get the number of seconds for each row
-            duration_seconds = [int(60 * minutes[0]) for minutes in df_fdg_cerveau['SeriesDescription']\
-                .str.extract('.*FDG Cerveau (.+)min.*').astype(int).values]
+            duration_seconds = [int(60 * minutes) for minutes in df_fdg_cerveau['SeriesDescription']\
+                .str.extract('.*FDG Cerveau (.+)min.*')[0].str.replace('x1','').astype(int).values]
             # calculate new end times
             end_times = [(start_times.iloc[i] + timedelta(seconds=duration_seconds[i])).strftime('%H%M%S')
                 for i in range(len(start_times))]
@@ -765,14 +769,20 @@ def get_NM_series_end_time(series_row):
             # extract the duration of each "rotation"
             rotation_durations = []
             for rotation in rotation_sequence:
+                if rotation.get('ActualFrameDuration') is None:
+                    logging.error('  ERROR IPP {}, SUID {}: missing "ActualFrameDuration" (0018, 1242) tag'
+                        .format(series_row['PatientID'], series_row['SeriesInstanceUID']))
+                    return
                 frame_dur = int(rotation['ActualFrameDuration'].value)
                 n_frames = rotation.get('NumberOfFramesInRotation')
                 if n_frames is None:
                     n_frames = len(rotation.get('RadialPosition'))
                 rotation_durations.append(frame_dur * int(n_frames))
-            # calculate the sum of all durations and convert it to seconds
-            series_duration = sum(rotation_durations)  / 1000
-            logging.debug('  {}: duration is based on rotation sequence'.format(series_row['SeriesInstanceUID']))
+
+            if rotation_durations is not None:
+                # calculate the sum of all durations and convert it to seconds
+                series_duration = sum(rotation_durations)  / 1000
+                logging.debug('  {}: duration is based on rotation sequence'.format(series_row['SeriesInstanceUID']))
 
         # if no "phase sequence vector" is present, use the actual frame duration
         elif str(series_row['ActualFrameDuration']) != 'nan' and str(series_row['NumberOfFrames']) != 'nan':
@@ -796,7 +806,7 @@ def get_NM_series_end_time(series_row):
     # if a duration info could be extracted, calculate the duration from the last instance's
     #   start time, as there could be multiple instances, even for a 'NM' series
     start_time_str = str(series_row['AcquisitionTime']).split('.')[0]
-    if start_time_str is None or len(start_time_str) == '' or start_time_str == 'nan':
+    if start_time_str is None or len(start_time_str) == 0 or start_time_str == 'nan':
         return None
 
     start_time = dt.strptime(start_time_str, '%H%M%S')
@@ -924,8 +934,8 @@ def get_data(config, query_dicts, to_fetch_fields, delete_data=True):
 
 
     # make sure download folder exists
-    if not os.path.exists(config['retrieve']['dicom_temp_dir']):
-        os.makedirs(config['retrieve']['dicom_temp_dir'])
+    if not os.path.exists(config['path']['dicom_temp_dir']):
+        os.makedirs(config['path']['dicom_temp_dir'])
 
     # make sure download folder is empty
     delete_DICOM_files(config)
@@ -954,16 +964,16 @@ def download_data_dcm4che(config, query_dicts):
 
     # create the command to launch the Store SCP server receiving the DICOMs
     storescp_commands = [
-        '{dcm4che_path}/storescp.bat'.format(**config['retrieve'])
+        '{}/storescp.bat'.format(config['path']['dcm4che_path'])
             .replace('/', '\\').replace('\\\\', '\\'),
         '-b', '{local_ae_title}@{local_host}:{local_port}'.format(**config['PACS']),
-        '--directory', '{dicom_temp_dir}'.format(**config['retrieve'])
+        '--directory', '{}'.format(config['path']['dicom_temp_dir'])
             .replace('/', '\\').replace('\\\\', '\\')
     ]
 
     # create the command to launch the MOVE SCU command to tell the PACS to send the DICOMs
     movescu_commands = [
-        '{dcm4che_path}/movescu.bat'.format(**config['retrieve'])
+        '{}/movescu.bat'.format(config['path']['dcm4che_path'])
             .replace('/', '\\').replace('\\\\', '\\'),
         '-c', '{remote_ae_title}@{remote_host}:{remote_port}'.format(**config['PACS']),
         '-b', '{local_ae_title}@{local_host}:{local_port}'.format(**config['PACS']),
@@ -1076,7 +1086,7 @@ def read_DICOM_files(config, to_fetch_fields):
     """
 
     # get the list of all available files in folder
-    DICOM_file_names = os.listdir(config['retrieve']['dicom_temp_dir'])
+    DICOM_file_names = os.listdir(config['path']['dicom_temp_dir'])
     logging.warning('Reading in {} DICOM file(s)'.format(len(DICOM_file_names)))
     # create the Dataframe that will hold the content of each file
     df = pd.DataFrame(columns=to_fetch_fields)
@@ -1084,7 +1094,7 @@ def read_DICOM_files(config, to_fetch_fields):
     i = 0
     for DICOM_file_name in DICOM_file_names:
         # read the DICOM file, without reading the pixels
-        ds = dcmread(os.path.join(config['retrieve']['dicom_temp_dir'], DICOM_file_name),
+        ds = dcmread(os.path.join(config['path']['dicom_temp_dir'], DICOM_file_name),
             stop_before_pixels=True)
         # copy each field back into the DataFrame
         for field in to_fetch_fields:
@@ -1105,8 +1115,8 @@ def delete_DICOM_files(config):
         None
     """
 
-    for filename in os.listdir(config['retrieve']['dicom_temp_dir']):
-        file_path = os.path.join(config['retrieve']['dicom_temp_dir'], filename)
+    for filename in os.listdir(config['path']['dicom_temp_dir']):
+        file_path = os.path.join(config['path']['dicom_temp_dir'], filename)
         try:
             if os.path.isfile(file_path) or os.path.islink(file_path):
                 os.unlink(file_path)
