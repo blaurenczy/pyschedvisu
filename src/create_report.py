@@ -700,7 +700,7 @@ def create_daily_table(config, fig, machine, df):
 
     # if we are not in a daily display mode, add a row for the number of days counting
     if days_range.freq.name != 'B':
-        summ_data.insert(2, [int(tot_days), '{:.1f}'.format(tot_days / n_cols)])
+        summ_data.insert(1, [int(tot_days), '{:.1f}'.format(tot_days / n_cols)])
         summ_table_colors = [ ['lightgray']*2, ['w']*2, ['w']*2, ['w']*2, ['w']*2, ['w']*2 ]
 
     # add new axes for the summary values
@@ -746,7 +746,7 @@ def create_violin(config, fig, machine, df):
         if len(df_descr) > 0:
             start_times = pd.to_datetime(df_descr['Start Time'], format='%H%M%S')
             end_times = pd.to_datetime(df_descr['End Time'], format='%H%M%S')
-            durations = (end_times - start_times).apply(lambda dur: dur.total_seconds())
+            durations = (end_times - start_times).apply(lambda dur: dur.total_seconds() / 60)
             data.append(durations.values)
             descr_names.append(descr_list[i_descr])
             x_positions.append(i_descr)
@@ -755,10 +755,6 @@ def create_violin(config, fig, machine, df):
     plt.ylabel('Durée (minutes)')
     plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=8)
     plt.xlim([-0.5, 9.5])
-    ylims = plt.ylim()
-    y_minutes = range(0, int(ylims[1] / 60) + 1, 10)
-    plt.yticks(ticks=[x * 60 for x in y_minutes], labels=y_minutes)
-    plt.ylim([(min(y_minutes) - 5) * 60, (max(y_minutes) + 5) * 60])
 
     # adjust the colors
     for i_body in range(len(results['bodies'])):

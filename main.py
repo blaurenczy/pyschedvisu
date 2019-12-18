@@ -187,6 +187,9 @@ def send_email(config, pdf_output_path):
         None
     """
 
+    # skip email sending if specified by the config
+    if not config['email'].getboolean('debug_send_email'): return
+
     # get the relevant part of the config
     email = config['email']
 
