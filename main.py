@@ -5,17 +5,22 @@ This is the master script running all the steps.
 """
 
 import logging
+import codecs
 
-import os
-os.chdir('H:/Mes Documents/ServiceCivil2019/schedvisu/')
-
-import sys
-sys.path.append('src')
-
+import smtplib
+from email.message import EmailMessage
+from email.headerregistry import Address
+from email.mime.application import MIMEApplication
 import pandas as pd
 from datetime import datetime as dt
 from datetime import timedelta
 from configparser import ConfigParser
+
+import os
+os.chdir('C:/TEMP/pySchedVisu/code')
+
+import sys
+sys.path.append('src')
 
 import retrieve_data
 import extract_data
@@ -61,11 +66,12 @@ def run_pipeline(config):
     Returns:
         None
     """
-    logging.warning("Starting SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
+    logging.warning("Starting pySchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
     retrieve_data.retrieve_and_save_data_from_PACS(config)
     extract_data.load_transform_and_save_data_from_files(config)
-    create_report.create_report(config)
-    logging.warning("Finished running SchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
+    pdf_output_path = create_report.create_report(config)
+    send_email(config, pdf_output_path)
+    logging.warning("Finished running pySchedVisu workflow for range {start_date} - {end_date}".format(**config['main']))
 
 def create_logger(config):
     """
@@ -81,7 +87,7 @@ def create_logger(config):
     # define the logging format and paths
     logging_format = '%(asctime)s|%(funcName)-30.30s:%(lineno)03s|%(levelname)-7s| %(message)s'
     logging_dir = os.path.join(config['path']['log_dir'], '{}'.format(dt.now().strftime('%Y%m')))
-    logging_filename = os.path.join(logging_dir, '{}_schedvisu.log'.format(dt.now().strftime('%Y%m%d_%H%M%S')))
+    logging_filename = os.path.join(logging_dir, '{}_pySchedVisu.log'.format(dt.now().strftime('%Y%m%d_%H%M%S')))
     # make sure the log directory exists
     if not os.path.exists(logging_dir): os.makedirs(logging_dir)
     # create the logger writing to the file
@@ -116,7 +122,8 @@ def load_config():
     # read in the configuration file
     config = ConfigParser()
     config.optionxform = str
-    config.read(config_path)
+    with codecs.open(config_path, "r", "utf-8") as f:
+        config.read_file(f)
 
     return config
 
@@ -169,6 +176,51 @@ def get_day_range(config, reduce_freq=False):
         logging.debug(f'Days range has {n_days} days, grouping by {days_range.freq.name}')
 
     return start_date, end_date, days_range
+
+def send_email(config, pdf_output_path):
+    """
+    Send an email after creating a report in auto mode.
+    Args:
+        config (dict):          a dictionary holding all the necessary parameters
+        pdf_output_path (str):  path to the PDF output file
+    Returns:
+        None
+    """
+
+    # get the relevant part of the config
+    email = config['email']
+
+    # create the message
+    msg = EmailMessage()
+
+    # set the headers
+    msg['Subject'] = email['subject']
+    msg['From'] = Address(display_name=email['sender_name'], addr_spec=email['sender_email'])
+    msg['To'] = [Address(addr_spec=email_addr) for email_addr in email['recipients_email'].split(',')]
+
+    # get the email's body and replace the relevant parts
+    body = email['body']
+    pdf_file_name = pdf_output_path.split('/')[-1]
+    body = body.replace('{__REPORT_PATH__}', pdf_output_path)
+    body = body.replace('{__REPORT_FOLDER_PATH__}', '/'.join(pdf_output_path.split('/')[:-1]))
+    body = body.replace('{__REPORT_FILE_NAME__}', pdf_file_name)
+
+    # add the body as HTML
+    msg.add_alternative(body, 'html')
+
+    # read in the PDF as bytes
+    with open(pdf_output_path, 'rb') as pdf:
+        pdf_data = pdf.read()
+
+    # add the PDF as attachment
+    att = MIMEApplication(pdf_data, 'pdf')
+    att.add_header('Content-Disposition', 'attachment', filename=pdf_file_name) # specify the filename
+    msg.make_mixed() # This converts the message to multipart/mixed
+    msg.attach(att)
+
+    # create the connection to the server and send the mail
+    with smtplib.SMTP(email['smtp_server']) as session:
+        session.send_message(msg)
 
 if __name__ == '__main__':
     run()

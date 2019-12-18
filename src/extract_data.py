@@ -418,7 +418,7 @@ def create_description_consensus(config, df_studies):
 
     # exclude some machines and do some grouping up
     df_studies = df_studies.copy()
-    df_studies['Machine'] = df_studies['Machine Group'].str.replace('NoCT', '')
+    df_studies['Machine'] = df_studies['Machine Group'].str.replace('_NoCT', '')
     df_studies = df_studies[df_studies['Machine'] != 'mixed cases']
 
     # generate a minified version of the description without special characters or spaces

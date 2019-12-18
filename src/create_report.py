@@ -4,12 +4,15 @@ import logging
 import pandas as pd
 import os
 import math
+
 import matplotlib.pyplot as plt
 from matplotlib.cbook import get_sample_data
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.backends.backend_pdf import PdfPages
+
 import matplotlib.colors as mc
 import colorsys
+
 from copy import deepcopy
 from random import random
 from datetime import date, timedelta
@@ -23,9 +26,9 @@ def create_report(config):
     Generates a PDF report by extracting the relevant data from the database, processing it and drawing the relevant
     plots, tables and annotations.
     Args:
-        config (dict): a dictionary holding all the necessary parameters
+        config (dict):          a dictionary holding all the necessary parameters
     Returns:
-        None
+        pdf_output_path (str):  the path where the report is stored
     """
 
     # get the date ranges
@@ -65,12 +68,12 @@ def create_report(config):
             date_ranges.append({ 'start': previous_monday_4Y, 'end': prev_friday })
 
     # create the multi-page report
-    now_str = dt.now().strftime('%Y-%m-%d_%Hh%Mm%Ss')
-    pdf_output_path = '{}/report_{}.pdf'.format(config['path']['output_dir'], now_str)
+    now_str = dt.now().strftime('%Y-%m-%d_%Hh%M')
+    pdf_output_path = '{}/pySchedVisu_rapport_du_{}.pdf'.format(config['path']['output_dir'], now_str)
     with PdfPages(pdf_output_path) as pdf:
 
         # either go through all available machines, or use the list specified by the config
-        machines_list = sorted(list(set([machine for machine in config['machines'].keys() if 'NoCT' not in machine])))
+        machines_list = sorted(list(set([machine for machine in config['machines'].keys() if '_NoCT' not in machine])))
         if config['draw']['debug_single_machine'] != '*':
             machines_list = config['draw']['debug_single_machine'].split(',')
 
@@ -93,12 +96,14 @@ def create_report(config):
                 plt.close()
 
         d = pdf.infodict()
-        d['Title'] = 'Rapport SchedVisu'
+        d['Title'] = 'Rapport pySchedVisu'
         d['Author'] = 'Balazs Laurenczy'
         d['Subject'] = 'Utilisation des machines PET & SPECT du CHUV'
-        d['Keywords'] = 'PET SPECT CHUV SchedVIsu'
+        d['Keywords'] = 'PET SPECT CHUV pySchedVIsu'
         d['CreationDate'] = dt.today()
         d['ModDate'] = dt.today()
+
+    return pdf_output_path
 
 def create_page(config, machine):
     """
@@ -124,14 +129,14 @@ def create_page(config, machine):
         return
 
     # exclude some machines and do some grouping up
-    df['Machine'] = df['Machine Group'].str.replace('NoCT', '')
+    df['Machine'] = df['Machine Group'].str.replace('_NoCT', '')
     df = df[df['Machine'] != 'mixed cases']
 
     # get the data for the current machine
     df_machine = df.query('Machine == @machine')
     if len(df_machine) == 0:
         logging.error('No data for {} {} - {} for this machine at these dates.'.format(machine,
-        date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
+        start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')))
         return
 
     # get the report type string
