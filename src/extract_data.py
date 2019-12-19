@@ -116,10 +116,13 @@ def load_transform_and_save_data_from_files(config):
                 'Machine Group': lambda x: '/'.join(set(x)),
                 'Modality': lambda x: '/'.join(set(x)),
                 'Protocol Name': lambda x: '/'.join(set(x))
-            }).sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
+            }).sort_values(['Start Time', 'Machine Group', 'SUID'])
 
         # create the description consensus
         df_studies_for_day = create_description_consensus(config, df_studies_for_day)
+        df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])
+        df_studies_for_day = add_preparation_times(config, df_studies_for_day)
+        df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])
 
         # merge back the extracted studies into the main DataFrame
         if df_studies is None:
@@ -127,7 +130,7 @@ def load_transform_and_save_data_from_files(config):
         else:
             # remove any rows belonging to the same day, if any
             df_studies = df_studies[df_studies['Date'] != day.strftime('%Y%m%d')]
-            df_studies = pd.concat([df_studies, df_studies_for_day])\
+            df_studies = pd.concat([df_studies, df_studies_for_day], sort=False)\
                 .sort_values(['Date', 'Start Time', 'Machine Group', 'SUID'])
 
     # abort if no studies could be loaded
@@ -201,7 +204,7 @@ def load_data_from_files(config):
                 # load the data for the current day
                 df_series_for_day = pd.read_pickle(day_save_file_path)
                 # concatenate the series of the current day into the global DataFrame
-                df_series = pd.concat([df_series, df_series_for_day], sort=True)
+                df_series = pd.concat([df_series, df_series_for_day], sort=False)
 
                 # load the failed series if required by the config
                 failed_day_save_file_path = day_save_file_path.replace('.pkl', '_failed.pkl')
@@ -209,7 +212,7 @@ def load_data_from_files(config):
                     logging.warning('Loading failed series for {}'.format(day_str))
                     df_failed_series = pd.read_pickle(failed_day_save_file_path)
                     # concatenate the failed series into the global DataFrame
-                    df_series = pd.concat([df_series, df_failed_series], sort=True)
+                    df_series = pd.concat([df_series, df_failed_series], sort=False)
 
             # if the current date has not already been retrieved and saved
             elif day.weekday() in [5, 6]:
@@ -405,7 +408,6 @@ def mark_machine_group(config, df_series_input):
 
     return df_series
 
-
 def create_description_consensus(config, df_studies):
     """
     Create a consensus on the studies description.
@@ -446,6 +448,68 @@ def create_description_consensus(config, df_studies):
 
     df_studies.loc[df_studies['Description'].isnull(), 'Description'] = 'OTHER'
     df_studies = df_studies.drop(columns=['Protocol Name', 'short_descr'], errors='ignore')
+
+    return df_studies
+
+def add_preparation_times(config, df_studies):
+    """
+    Add preparation times for each study.
+    Args:
+        config (dict): a dictionary holding all the necessary parameters
+        df_studies (DataFrame): a pandas DataFrame holding the studies
+    Returns:
+        df_studies (DataFrame): a pandas DataFrame holding the studies, annotated with the preparation times
+    """
+
+    # go through the studies machine by machine
+    for machine in set(df_studies['Machine']):
+
+        logging.debug(f'Processing {machine}')
+        # get all studies for this machine
+        df_machine = df_studies.query('Machine == @machine')
+        # get the number of minutes to add before and after each study for the current machine
+        field_name = 'prep_time_' + machine.lower().replace(' ', '')
+        if field_name not in config['draw'].keys(): continue
+        prep_time_sec = config['draw'].getint(field_name) * 60
+
+        # go through the studies day by day
+        for day in set(df_machine['Date']):
+            logging.debug(f'Processing {machine} and {day}')
+            # get all studies for this day
+            df_day = df_machine.query('Date == @day').sort_values('Start Time')
+
+            df_day['Start Time Prep'] = df_day['Start Time']\
+                .apply(lambda st: dt.strptime(st, '%H%M%S') - timedelta(seconds=prep_time_sec))
+            df_day['End Time Prep'] = df_day['End Time']\
+                .apply(lambda et: dt.strptime(et, '%H%M%S') + timedelta(seconds=prep_time_sec))
+            # go through each study to check whether there are overlaps
+            for i in range(1, len(df_day)):
+                logging.debug('Checking for overlap for {}, {}, {}:'.format(machine, day,
+                    df_day.iloc[i]["Patient ID"]))
+                logging.debug('Start current ({}) = {}, end previous ({}) = {}'
+                    .format(i, df_day.iloc[i]['Start Time Prep'], i - 1, df_day.iloc[i - 1]['End Time Prep']))
+                # if there is an overlap
+                if df_day.iloc[i]['Start Time Prep'] < df_day.iloc[i - 1]['End Time Prep']:
+                    # test whether it is a partial overlap (one study not fully contained in another)
+                    if df_day.iloc[i - 1]['End Time Prep'] < df_day.iloc[i]['End Time Prep']:
+                        # get the mid time in between the two studies
+                        overlap_dur = df_day.iloc[i - 1]['End Time Prep'] - df_day.iloc[i]['Start Time Prep']
+                        mid_time = df_day.iloc[i]['Start Time Prep'] + overlap_dur / 2
+                        df_day.loc[df_day.iloc[i].name, 'Start Time Prep'] = mid_time
+                        df_day.loc[df_day.iloc[i - 1].name, 'End Time Prep'] = mid_time
+                        logging.debug(f'Partial overlap: {overlap_dur}, mid_time: {mid_time}')
+                    # if it is a complete overlap, keep the original start and end times for the "included" study
+                    else:
+                        logging.debug(f'Complete overlap.')
+                        df_day.loc[df_day.iloc[i].name, 'Start Time Prep'] \
+                            = dt.strptime(df_day.iloc[i]['Start Time'], '%H%M%S')
+                        df_day.loc[df_day.iloc[i].name, 'End Time Prep'] \
+                            = dt.strptime(df_day.iloc[i]['End Time'], '%H%M%S')
+            # transform datetimes to strings
+            df_studies.loc[df_day.index, 'Start Time Prep'] \
+                = df_day['Start Time Prep'].apply(lambda st: st.strftime('%H%M%S'))
+            df_studies.loc[df_day.index, 'End Time Prep'] \
+                = df_day['End Time Prep'].apply(lambda et: et.strftime('%H%M%S'))
 
     return df_studies
 
