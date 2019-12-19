@@ -113,6 +113,8 @@ def create_report(config):
                 if not config['draw'].getboolean('debug_save_as_image'):
                     plt.close()
 
+        # create_stat_page(config)
+
         d = pdf.infodict()
         d['Title'] = 'Rapport pySchedVisu'
         d['Author'] = 'Balazs Laurenczy'
@@ -183,8 +185,6 @@ def create_page(config, machine):
     # load the relevant studies
     logging.info("Reading in studies")
     df, _ = extract_data.load_transform_and_save_data_from_files(config)
-
-    # get the data for the current machine
     if df is None or len(df) == 0:
         logging.error('No data for {} {} - {} at these dates.'.format(machine,
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')))
@@ -521,7 +521,7 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
                 if gap_duration_hour * 60 >= gap_threshold:
                     end_hours = df_day['End Time'].apply(_as_hour)
                     if any([end_hour > end_prev_prep_hour and end_hour < start_prep_hour for end_hour in end_hours]):
-                        logging.warning('Found gap but it is between an overlapping study and the next study, so skipping.')
+                        logging.info('Found gap but it is between an overlapping study and the next study, so skipping.')
                     else:
                         line_width = 2
                         if n_days > 40: line_width = 1
@@ -995,3 +995,27 @@ def _add_cell_from_timedelta(data, cell_colors, duration_seconds, i_descr):
     cell_colors[i_descr + 1].append('w')
 
     return data, cell_colors
+
+
+def create_stat_page(config):
+    """
+    Create a statistics page at the end of the report
+    Args:
+        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
+    Returns:
+        None
+    """
+
+    # create a matplotlib figure with the right aspect ratio
+    fig = plt.figure(figsize=[8.27, 11.69], dpi=config['draw'].getint('dpi'))
+
+    create_header(config, fig, machine)
+
+    if config['draw'].getboolean('debug_save_as_image'):
+        #plt.show()
+        logging.info("Saving PDF file")
+        im_output_path = '{}/output_{}_{}_{}_{}'.format(config['path']['output_dir'],
+            machine.lower().replace(' ', ''), report_type.replace(' ', ''),
+            start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+        fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
+        fig.savefig(im_output_path + '.png', orientation='portrait', papertype='a4', format='png')

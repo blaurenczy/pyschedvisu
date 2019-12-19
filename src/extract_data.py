@@ -35,6 +35,7 @@ def load_transform_and_save_data_from_files(config):
     for year in range(start_date.year, end_date.year + 1):
         holiday_days.append(dt(year, 12, 24))
         holiday_days.append(dt(year, 12, 26))
+        holiday_days.append(dt(year, 12, 31))
 
     # check if the some studies have already been extracted
     if os.path.isfile(studies_save_path):
@@ -81,7 +82,7 @@ def load_transform_and_save_data_from_files(config):
             logging.info('Processing {} [{}/{}]: day is required and already processed but "force" option is on'
                 .format(day.strftime('%Y%m%d'), days_to_process.index(day), len(days_to_process)))
         else:
-            logging.info('Processing {} [{}/{}]: day is required but not present in the main DataFrame'
+            logging.warning('Processing {} [{}/{}]: day is required but not present in the main DataFrame'
                 .format(day.strftime('%Y%m%d'), days_to_process.index(day), len(days_to_process)))
 
         # create a local config object just to process the specified days
@@ -121,8 +122,11 @@ def load_transform_and_save_data_from_files(config):
         # create the description consensus
         df_studies_for_day = create_description_consensus(config, df_studies_for_day)
         df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])
+        # add the preparation times before and after each study
         df_studies_for_day = add_preparation_times(config, df_studies_for_day)
         df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])
+        # add the time to the previous and to the next study
+        df_studies_for_day = add_time_to_prev_and_next(config, df_studies_for_day)
 
         # merge back the extracted studies into the main DataFrame
         if df_studies is None:
@@ -464,7 +468,7 @@ def add_preparation_times(config, df_studies):
     # go through the studies machine by machine
     for machine in set(df_studies['Machine']):
 
-        logging.debug(f'Processing {machine}')
+        logging.warning(f'Processing preparation times for {machine}')
         # get all studies for this machine
         df_machine = df_studies.query('Machine == @machine')
         # get the number of minutes to add before and after each study for the current machine
@@ -513,49 +517,49 @@ def add_preparation_times(config, df_studies):
 
     return df_studies
 
-def DEPRECATED_show_series_groupby(config, df_series):
+
+
+def add_time_to_prev_and_next(config, df_studies):
     """
-    DEPRECATED: Group series together using a defined set of columns.
+    Add columns describing the time to the next and to the previous study.
     Args:
-        config (dict): a dictionary holding all the necessary parameters
-        df_series (DataFrame): a pandas DataFrame holding the series
+        config (dict):              a dictionary holding all the necessary parameters
+        df_studies (DataFrame):     a pandas DataFrame holding the studies
     Returns:
-        None
+        df_studies (DataFrame):     a pandas DataFrame holding the studies, annotated with the new columns
     """
 
-    # aggregate series to count the number of series for each sub-group
-    groupby_columns = ['Machine Group', 'Machine Group List', 'Institution Name', 'Machine', 'Modality']
-    df_series_grouped_by_series = df_series.groupby(groupby_columns)
-    df_count_series = pd.DataFrame(df_series_grouped_by_series.count())
-    df_count_series = pd.DataFrame(df_count_series.rename(
-        columns = {'Series Instance UID': 'Number of Series'})['Number of Series'])
+    FMT = '%H%M%S'
+    df = df_studies.copy()
 
-    # aggregate series to count the number of studies for each sub-group
-    df_series_grouped_by_study = df_series.groupby(groupby_columns + ['SUID'])
-    df_count_studies = df_series_grouped_by_study.count().reset_index()
-    df_count_studies = df_count_studies.groupby(groupby_columns).count()
-    df_count_studies = pd.DataFrame(df_count_studies.rename(
-        columns = {'SUID': 'Number of Studies'})['Number of Studies'])
+    # convert all the columns to datetime
+    df['Start Time'] = pd.to_datetime(df['Start Time'], format=FMT)
+    df['End Time'] = pd.to_datetime(df['End Time'], format=FMT)
+    df['Start Time Prep'] = pd.to_datetime(df['Start Time Prep'], format=FMT)
+    df['End Time Prep'] = pd.to_datetime(df['End Time Prep'], format=FMT)
 
-    # aggregate series to count the number of series per day per machine
-    groupby_columns = ['Date', 'Machine Group']
-    df_series_grouped_by_series_day = df_series.groupby(groupby_columns)
-    df_count_series_day = pd.DataFrame(df_series_grouped_by_series_day.count())
-    df_count_series_day = pd.DataFrame(df_count_series_day.rename(
-        columns = {'Series Instance UID': 'Number of Series'})['Number of Series'])
-    df_count_series_day = df_count_series_day.unstack()
+    # compare the start time of a row with the end time of the previous row
+    df['time_to_prev'] = df['End Time'].shift() - df['Start Time']
+    df.loc[df['time_to_prev'] < timedelta(0), 'time_to_prev'] *= -1
+    df['time_to_prev_prep'] = df['End Time Prep'].shift() - df['Start Time Prep']
+    df.loc[df['time_to_prev_prep'] < timedelta(0), 'time_to_prev_prep'] *= -1
 
-    # aggregate series to count the number of studies per day per machine
-    df_series_grouped_by_study_day = df_series.groupby(groupby_columns + ['SUID'])
-    df_count_study_day = df_series_grouped_by_study_day.count().reset_index()
-    df_count_study_day = df_count_study_day.groupby(groupby_columns).count()
-    df_count_study_day = pd.DataFrame(df_count_study_day.rename(
-        columns = {'Series Instance UID': 'Number of Studies'})['Number of Studies'])
-    df_count_study_day = df_count_study_day.unstack()
+    # compare the end time of a row with the start time of the next row
+    df['time_to_next'] = df['Start Time'].shift(-1) - df['End Time']
+    df.loc[df['time_to_next'] < timedelta(0), 'time_to_next'] *= -1
+    df['time_to_next_prep'] = df['Start Time Prep'].shift(-1) - df['End Time Prep']
+    df.loc[df['time_to_next_prep'] < timedelta(0), 'time_to_next_prep'] *= -1
 
-    # aggregate series to count the number of studies per weekday per machine
-    df_count_study_weekday = df_count_study_day.copy()
-    df_count_study_weekday['Weekday'] = pd.Categorical([
-        dt.strptime(d, '%Y%m%d').strftime("%A") for d in df_count_study_weekday.index],
-        categories=['Monday','Tuesday','Wednesday','Thursday','Friday'], ordered=True)
-    df_count_study_weekday = df_count_study_weekday.groupby('Weekday').sum()
+    # get the fully contained studies (studies that start after another study but finish before that same study)
+    df['fully_contained'] = (df['End Time'] < df['End Time'].shift()) & (df['Start Time'] > df['Start Time'].shift())\
+        & (df['Date'].shift() == df['Date']) & (df['Date'].shift(-1) == df['Date'])
+
+    # make sure that we only keep values where the dates are identical
+    df.loc[df['Date'] != df['Date'].shift(), 'time_to_prev'] = pd.NaT
+    df.loc[df['Date'] != df['Date'].shift(), 'time_to_prev_prep'] = pd.NaT
+    df.loc[df['Date'] != df['Date'].shift(-1), 'time_to_next'] = pd.NaT
+    df.loc[df['Date'] != df['Date'].shift(-1), 'time_to_next_prep'] = pd.NaT
+
+    # copy the columns
+    for col in ['time_to_prev', 'time_to_prev_prep', 'time_to_next', 'time_to_next', 'fully_contained']:
+        df_studies.loc[df.index, col] = df[col]
