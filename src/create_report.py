@@ -115,6 +115,8 @@ def create_report(config):
                 if not config['draw'].getboolean('debug_save_as_image'):
                     plt.close()
 
+        # create_stat_page(config)
+
         d = pdf.infodict()
         d['Title'] = 'Rapport pySchedVisu'
         d['Author'] = 'Balazs Laurenczy'
