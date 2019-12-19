@@ -187,7 +187,7 @@ def create_page(config, machine):
     # get the data for the current machine
     if df is None or len(df) == 0:
         logging.error('No data for {} {} - {} at these dates.'.format(machine,
-            date_range['start'].strftime('%Y%m%d'), date_range['end'].strftime('%Y%m%d')))
+            start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')))
         return
 
     # exclude some machines and do some grouping up
@@ -417,6 +417,9 @@ def create_schedule_plot(config, fig, machine, df):
 
     # set the y limits
     _set_schedule_y_lims(config, df)
+    # add grid lines
+    plt.grid(True, 'major', 'y', linestyle=':', linewidth=1)
+    sched_ax.set_axisbelow(True)
 
 def _set_schedule_y_lims(config, df):
     """
@@ -661,7 +664,14 @@ def create_schedule_distribution_plot(config, fig, machine, df):
 
     # remove the ticks
     plt.xticks([])
-    plt.yticks([])
+    for tic in distr_ax.yaxis.get_major_ticks():
+        tic.tick1line.set_visible(False)
+        tic.tick2line.set_visible(False)
+        tic.label1.set_visible(False)
+        tic.label2.set_visible(False)
+    # add grid lines
+    plt.grid(True, 'major', 'y', linestyle=':', linewidth=1)
+    distr_ax.set_axisbelow(True)
 
 def create_daily_table(config, fig, machine, df):
     """
