@@ -4,6 +4,7 @@ import logging
 import pandas as pd
 import os
 import math
+import shutil
 
 import matplotlib.pyplot as plt
 from matplotlib.cbook import get_sample_data
@@ -13,10 +14,13 @@ from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.colors as mc
 import colorsys
 
+from collections import namedtuple
 from copy import deepcopy
 from random import random
 from datetime import date, timedelta
 from datetime import datetime as dt
+
+from PyPDF2 import PdfFileWriter, PdfFileReader
 
 import main
 import extract_data
@@ -67,6 +71,11 @@ def create_report(config):
         if 'longueduree'    in config['main']['report_range'].split(','):
             date_ranges.append({ 'start': previous_monday_4Y, 'end': prev_friday })
 
+    # store page content in a dictionary for bookmarks
+    Bookmark = namedtuple('Bookmark', 'title page parent')
+    bookmarks, i_page = [], 0
+    bookmarks.append(Bookmark(title='Rapport pySchedVisu', page=i_page, parent=None))
+
     # create the multi-page report
     now_str = dt.now().strftime('%Y-%m-%d_%Hh%M')
     pdf_output_path = '{}/pySchedVisu_rapport_du_{}.pdf'.format(config['path']['output_dir'], now_str)
@@ -80,6 +89,9 @@ def create_report(config):
         # go through each machine
         for machine in machines_list:
 
+            # create a parent entry for bookmarks
+            bookmarks.append(Bookmark(title=machine, page=i_page, parent='Rapport pySchedVisu'))
+
             # go through each date range
             for date_range in date_ranges:
 
@@ -88,8 +100,13 @@ def create_report(config):
                 local_config['main']['start_date'] = date_range['start'].strftime('%Y%m%d')
                 local_config['main']['end_date'] = date_range['end'].strftime('%Y%m%d')
 
+                # create entry for bookmarks
+                report_type = get_report_type(date_range['start'], date_range['end'])
+                bookmarks.append(Bookmark(title=report_type, page=i_page, parent=machine))
+
                 # create one page of the report
                 create_page(local_config, machine)
+                i_page += 1
 
                 # save the page
                 pdf.savefig()
@@ -103,7 +120,51 @@ def create_report(config):
         d['CreationDate'] = dt.today()
         d['ModDate'] = dt.today()
 
+    # add bookmarks
+    add_bookmarks(pdf_output_path, bookmarks)
+
     return pdf_output_path
+
+def add_bookmarks(pdf_output_path, bookmarks):
+    """
+    Create a copy of the PDF file with the same name but including bookmarks
+    Args:
+        pdf_output_path (str):      the path where the report is stored
+        bookmarks (list of list):   the 2D array specifying how to put the bookmarks
+    Returns:
+        None
+    """
+
+    # store the handles of the created bookmarks
+    bookmark_handles = {}
+
+    # define the input and output objects
+    reader = PdfFileReader(open(pdf_output_path, 'rb'))
+    writer = PdfFileWriter()
+    # copy meta data
+    metadata = reader.getDocumentInfo()
+    writer.addMetadata(metadata)
+    # go through the bookmarks
+    i_page, parent_bookmark_handle = 0, None
+    for bookmark in bookmarks:
+        # if we encounter a page we did not copy yet, add it
+        if i_page == bookmark.page:
+            writer.addPage(reader.getPage(i_page))
+            i_page += 1
+        # if the bookmark has the previous bookmark as a parent
+        if bookmark.parent is not None and bookmark.parent in bookmark_handles.keys():
+            bookmark_handles[bookmark.title] = \
+                writer.addBookmark(bookmark.title, bookmark.page, bookmark_handles[bookmark.parent])
+        else:
+            bookmark_handles[bookmark.title] = writer.addBookmark(bookmark.title, bookmark.page)
+
+    # write out the file
+    temp_path = pdf_output_path.replace('.pdf', '__withBM.pdf')
+    with open(temp_path, 'wb') as out:
+        writer.write(out)
+
+    # overwrite report
+    shutil.move(temp_path, pdf_output_path)
 
 def create_page(config, machine):
     """
@@ -145,11 +206,11 @@ def create_page(config, machine):
         start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), report_type))
 
     # create a matplotlib figure with the right aspect ratio
-    fig = plt.figure(figsize=[8.27, 11.69])
+    fig = plt.figure(figsize=[8.27, 11.69], dpi=300)
 
     # create the report, section by section
     create_header(config, fig, machine)
-    #create_notes(config, fig)
+    # create_notes(config, fig)
     create_schedule(config, fig, machine, df_machine)
     create_daily_table(config, fig, machine, df_machine)
     create_violin(config, fig, machine, df_machine)
@@ -193,7 +254,10 @@ def create_header(config, fig, machine):
     fig.text(0.63, 0.86, "au {}".format(end_date.strftime("%d/%m/%Y")), fontsize=20)
 
     # machine name
-    fig.text(0.01, 0.83, 'Machine: ' + machine, fontsize=20)
+    if len(machine) > 10:
+        fig.text(0.04, 0.83, 'Machine: ' + machine, fontsize=14)
+    else:
+        fig.text(0.04, 0.83, 'Machine: ' + machine, fontsize=18)
 
     im_machine_path = '{}/images/{}.png'.format(os.getcwd(), machine.lower().replace(' ', '')).replace('/', '\\')
     im_machine = plt.imread(get_sample_data(im_machine_path))
@@ -201,13 +265,26 @@ def create_header(config, fig, machine):
     im_machine_ax.imshow(im_machine)
     im_machine_ax.axis('off')
 
-    ## draw the logo
-    im_logo_path = '{}/images/logo_transp.png'.format(os.getcwd()).replace('/', '\\')
+    # draw the schedVisu logo
+    im_logo_path = '{}/images/schedvisu_logo_transp.png'.format(os.getcwd()).replace('/', '\\')
     im_log = plt.imread(get_sample_data(im_logo_path))
-    im_logo_ax = fig.add_axes([0.01, 0.86, 0.58, 0.13], anchor='NE')
+    im_logo_ax = fig.add_axes([0.04, 0.83, 0.28, 0.15], anchor='NE')
     im_logo_ax.imshow(im_log)
     im_logo_ax.axis('off')
 
+    # draw the CHUV logo
+    im_chuv_logo_path = '{}/images/chuv.png'.format(os.getcwd()).replace('/', '\\')
+    im_chuv_log = plt.imread(get_sample_data(im_chuv_logo_path))
+    im_chuv_logo_ax = fig.add_axes([0.04, 0.75, 0.28, 0.15], anchor='NE')
+    im_chuv_logo_ax.imshow(im_chuv_log)
+    im_chuv_logo_ax.axis('off')
+
+    # draw the VD logo
+    im_vd_logo_path = '{}/images/vd.png'.format(os.getcwd()).replace('/', '\\')
+    im_vd_log = plt.imread(get_sample_data(im_vd_logo_path))
+    im_vd_logo_ax = fig.add_axes([0.02, 0.24, 0.02, 0.05], anchor='NE')
+    im_vd_logo_ax.imshow(im_vd_log)
+    im_vd_logo_ax.axis('off')
 
 def get_report_type(start_date, end_date):
     """
@@ -286,7 +363,7 @@ def create_schedule_plot(config, fig, machine, df):
     start_date, end_date, days_range = main.get_day_range(config)
 
     # create the new axes
-    sched_ax = fig.add_axes([0.06, 0.42, 0.80, 0.39], anchor='NE')
+    sched_ax = fig.add_axes([0.08, 0.42, 0.78, 0.39], anchor='NE')
     sched_ax.invert_yaxis()
 
     # create the ticks and labels, with a reduced frequency
@@ -569,7 +646,7 @@ def create_daily_table(config, fig, machine, df):
     logging.info("Creating daily table section")
 
     # add new axes
-    table_ax = fig.add_axes([0.06, 0.29, 0.80, 0.12], anchor='NE')
+    table_ax = fig.add_axes([0.08, 0.29, 0.78, 0.12], anchor='NE')
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
