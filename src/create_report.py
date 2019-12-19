@@ -517,12 +517,17 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
                 # check how long the gap was with previous study
                 gap_duration_hour = start_prep_hour - end_prev_prep_hour
                 gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
+                # if the duration between the last end and the current start is bigger than the threshold
                 if gap_duration_hour * 60 >= gap_threshold:
-                    line_width = 2
-                    if n_days > 40: line_width = 1
-                    # plot a black line to show gaps
-                    plt.plot([i_day, i_day], [start_hour - 0.2, end_prev_hour + 0.2],
-                        color='black', linestyle='dashed', linewidth=line_width)
+                    end_hours = df_day['End Time'].apply(_as_hour)
+                    if any([end_hour > end_prev_prep_hour and end_hour < start_prep_hour for end_hour in end_hours]):
+                        logging.warning('Found gap but it is between an overlapping study and the next study, so skipping.')
+                    else:
+                        line_width = 2
+                        if n_days > 40: line_width = 1
+                        # plot a black line to show gaps
+                        plt.plot([i_day, i_day], [start_hour - 0.2, end_prev_hour + 0.2],
+                            color='black', linestyle='dashed', linewidth=line_width)
 
         # get the start and stop times rounded to the minute
         logging.debug('day {}, start {:5.2f} -> end {:5.2f}, duration: {:4.2f}, i_day: {}'
@@ -579,8 +584,9 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
 
         # DEBUG show information string
         if config['draw'].getboolean('debug_schedule_show_IPP_string'):
-            plt.text(x + box_w * 0.1, y + 0.9 * h, '{}: {} - {}: {:.2f}h'
-                .format(*study[['Patient ID', 'Start Time', 'End Time']], duration_hours))
+            dur_str = '{}h{:02d}'.format(math.floor(duration_hours), int(duration_hours * 60 % 60))
+            plt.text(x + box_w * 0.1, y + 0.9 * h, '{}: {} - {}: {}'
+                .format(*study[['Patient ID', 'Start Time', 'End Time']], dur_str))
 
 def _as_hour(t):
     """
