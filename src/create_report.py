@@ -109,9 +109,14 @@ def create_report(config):
                 i_page += 1
 
                 # save the page
-                pdf.savefig()
-                if not config['draw'].getboolean('debug_save_as_image'):
-                    plt.close()
+                try:
+                    pdf.savefig()
+                    if not config['draw'].getboolean('debug_save_as_image'):
+                        plt.close()
+                # do not throw an error if there is no figure
+                except ValueError as e:
+                    logging.warning('No data, so no figure.')
+                    pass
 
         # create_stat_page(config)
 
@@ -935,26 +940,52 @@ def create_stat_table(config, fig, machine, df):
     start_date, end_date, days_range = main.get_day_range(config)
 
     # get the list of descriptions for the currently processed machine
-    descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
+    descriptions = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
     colors = config['draw']['colors'].split(',')
 
     # initialize the variable holding all the information to be displayed in the table
     data = [['DESCRIPTION', 'N.EXA', 'MOY', 'MIN', 'MAX']]
     cell_colors = [['lightgray'] + ['lightgray'] * 4]
 
+    df = df.copy()
+    start_times = pd.to_datetime(df['Start Time'], format='%H%M%S')
+    end_times = pd.to_datetime(df['End Time'], format='%H%M%S')
+    df['duration'] = end_times - start_times
+    df['i_take'] = list(df.reset_index()['SUID'].apply(lambda x: x.split('_')[-1]))
+    df['i_take'] = df['i_take'].astype(int)
+
     # go through each study type
-    for i_descr in range(len(descr_list)):
-        # append the row headers
-        data.append([descr_list[i_descr].replace('OTHER', 'AUTRE')])
-        cell_colors.append([colors[i_descr]])
+    descriptions_with_retakes = []
+    retake_filters = []
+    for descr in descriptions:
+        if descr in config['draw']['retake_descriptions'].split(','):
+            descriptions_with_retakes.append(descr)
+            retake_filters.append('== 1')
+            descriptions_with_retakes.append(descr)
+            retake_filters.append('>= 2')
+        else:
+            descriptions_with_retakes.append(descr)
+            retake_filters.append('>= 1')
+
+    # go through each study type
+    for descr, retake_filt in zip(descriptions_with_retakes, retake_filters):
 
         # get the data and calculate values for the current day
-        df_descr = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}" & Description == "{}"'
-            .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'), machine, descr_list[i_descr]))
+        df_descr = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}" & Description == "{}" & i_take {}'
+            .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'), machine, descr, retake_filt))
+
+        # append the row headers
+        descr_label = descr.replace('OTHER', 'AUTRE')
+        if retake_filt == '== 1':
+            descr_label += ' (1 )'
+        elif retake_filt == '>= 2':
+            descr_label += ' (2+)'
+        data.append([descr_label])
+        cell_colors.append([colors[descriptions.index(descr)]])
 
         # append the number of studies
-        data[i_descr + 1].append(len(df_descr))
-        cell_colors[i_descr + 1].append('w')
+        data[-1].append(len(df_descr))
+        cell_colors[-1].append('w')
 
         # if there is at least one study of the current type
         if len(df_descr) > 0:
@@ -963,15 +994,15 @@ def create_stat_table(config, fig, machine, df):
             end_times = pd.to_datetime(df_descr['End Time'], format='%H%M%S')
             durations = end_times - start_times
             # add the mean, min and max values
-            data, cell_colors = _add_cell_from_timedelta(data, cell_colors, durations.mean().total_seconds(), i_descr)
-            data, cell_colors = _add_cell_from_timedelta(data, cell_colors, durations.min().total_seconds(), i_descr)
-            data, cell_colors = _add_cell_from_timedelta(data, cell_colors, durations.max().total_seconds(), i_descr)
+            data, cell_colors = _add_cell_from_timedelta(data, cell_colors, durations.mean().total_seconds())
+            data, cell_colors = _add_cell_from_timedelta(data, cell_colors, durations.min().total_seconds())
+            data, cell_colors = _add_cell_from_timedelta(data, cell_colors, durations.max().total_seconds())
 
         # if there are no study of the current type
         else:
-            logging.debug('Appending empty cells for {} because there is no data'.format(descr_list[i_descr]))
-            data[i_descr + 1].extend(['-']*3)
-            cell_colors[i_descr + 1].extend(['w']*3)
+            logging.debug('Appending empty cells for {} because there is no data'.format(descr))
+            data[-1].extend(['-']*3)
+            cell_colors[-1].extend(['w']*3)
 
     # count the duration of gaps
     gap_durations = []
@@ -1007,9 +1038,9 @@ def create_stat_table(config, fig, machine, df):
     # if there is at least one study of the current type
     if len(gap_durations) > 0:
         # add the mean, min and max values
-        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.mean().total_seconds(), -2)
-        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.min().total_seconds(), -2)
-        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.max().total_seconds(), -2)
+        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.mean().total_seconds())
+        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.min().total_seconds())
+        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.max().total_seconds())
 
     # if there are no study of the current type
     else:
@@ -1023,14 +1054,13 @@ def create_stat_table(config, fig, machine, df):
     table.auto_set_font_size(False)
     table.set_fontsize(7)
 
-def _add_cell_from_timedelta(data, cell_colors, duration_seconds, i_descr):
+def _add_cell_from_timedelta(data, cell_colors, duration_seconds):
     """
     Adds a cell to the statistics table.
     Args:
         data (list of list):        2-D array containing the cell's text content
         cell_colors (list of list): 2-D array containing the cell's color
         duration_seconds (int):     number of seconds to be displayed
-        i_descr (int):              index of the current row
     Returns:
         data (list of list):        updated 2-D array containing the cell's text content
         cell_colors (list of list): updated 2-D array containing the cell's color
@@ -1039,8 +1069,8 @@ def _add_cell_from_timedelta(data, cell_colors, duration_seconds, i_descr):
     # transform the seconds into a MIN:SEC string
     duration_str = '{:02d}:{:02d}'.format(int(math.floor(duration_seconds / 60)), int(duration_seconds % 60))
     # append the value and the color
-    data[i_descr + 1].append(duration_str)
-    cell_colors[i_descr + 1].append('w')
+    data[-1].append(duration_str)
+    cell_colors[-1].append('w')
 
     return data, cell_colors
 

@@ -141,8 +141,12 @@ def get_day_range(config, reduce_freq=False):
 
     # if auto mode for report
     if config['main']['end_date'] == 'auto' and config['main']['mode'] == 'report':
-        end_date = dt.today() - timedelta(days=dt.today().weekday() - 4)
-        if end_date > dt.today(): end_date = end_date - timedelta(days=7)
+        # use the current day as starting point
+        today = dt.today()
+        # use previous day if it is not 22:00 yet
+        if today.hour < 22: today -= timedelta(days=1)
+        end_date = today - timedelta(days=today.weekday() - 4)
+        if end_date > today: end_date = end_date - timedelta(days=7)
     else:
         end_date = dt.strptime(config['main']['end_date'], '%Y%m%d')
 
