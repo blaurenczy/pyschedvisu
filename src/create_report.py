@@ -508,7 +508,7 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
 
         # if the duration is negative
         if duration_hours <= 0:
-            logging.warning('Problem with study {} on day {}: duration is 0 or negative: {}'
+            logging.info('Problem with study {} on day {}: duration is 0 or negative: {}'
                 .format(study.name, day_str, duration_hours))
             continue
 

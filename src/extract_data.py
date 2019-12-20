@@ -469,7 +469,7 @@ def add_preparation_times(config, df_studies):
         df_studies (DataFrame): a pandas DataFrame holding the studies, annotated with the preparation times
     """
 
-    logging.warning(f'Processing preparation times')
+    logging.info(f'Processing preparation times')
 
     # go through the studies machine by machine
     for machine in set(df_studies['Machine']):
@@ -537,7 +537,7 @@ def add_time_to_prev_and_next(config, df_studies):
 
     FMT = '%H%M%S'
     df = df_studies.copy()
-    logging.warning('Processing time-to-prev and time-to-next')
+    logging.info('Processing time-to-prev and time-to-next')
 
     # convert all the columns to datetime
     df['Start Time'] = pd.to_datetime(df['Start Time'], format=FMT)
