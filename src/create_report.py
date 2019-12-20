@@ -56,8 +56,6 @@ def create_report(config):
         previous_monday_4Y = previous_monday_1Y.replace(year=prev_friday.year - 3)
 
         date_ranges = []
-        if 'journalier'     in config['main']['report_range'].split(','):
-            date_ranges.append({ 'start': dt.today(), 'end': dt.today() })
         if 'hebdomadaire'   in config['main']['report_range'].split(','):
             date_ranges.append({ 'start': previous_monday_1W, 'end': prev_friday })
         if 'bimensuel'      in config['main']['report_range'].split(','):
@@ -205,7 +203,7 @@ def create_page(config, machine):
 
     # get the report type string
     report_type = get_report_type(start_date, end_date)
-    logging.warning('Creating report for {} for {} - {}: "{}"'.format(machine,
+    logging.warning('Creating report for {:16s} for {} - {}: "{}"'.format(machine,
         start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), report_type))
 
     # create a matplotlib figure with the right aspect ratio
@@ -748,7 +746,11 @@ def create_daily_table(config, fig, machine, df):
                 gap_duration_hour = start_prep_hour - end_prev_prep_hour
                 gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
                 if gap_duration_hour * 60 >= gap_threshold:
-                    n_gaps += 1
+                    end_hours = df_day['End Time'].apply(_as_hour)
+                    if any([end_hour > end_prev_prep_hour and end_hour < start_prep_hour for end_hour in end_hours]):
+                        logging.info('Found gap but it is between an overlapping study and the next study, so skipping.')
+                    else:
+                        n_gaps += 1
 
         logging.debug('Processing day {}: next_day = {}, n_studies = {}, n_days_in_range = {}, n_max_studies = {}'
             .format(day.strftime("%Y%m%d"), next_day.strftime("%Y%m%d"), n_studies, n_days_in_range, n_max_studies))
@@ -943,7 +945,7 @@ def create_stat_table(config, fig, machine, df):
     # go through each study type
     for i_descr in range(len(descr_list)):
         # append the row headers
-        data.append([descr_list[i_descr]])
+        data.append([descr_list[i_descr].replace('OTHER', 'AUTRE')])
         cell_colors.append([colors[i_descr]])
 
         # get the data and calculate values for the current day
@@ -970,6 +972,50 @@ def create_stat_table(config, fig, machine, df):
             logging.debug('Appending empty cells for {} because there is no data'.format(descr_list[i_descr]))
             data[i_descr + 1].extend(['-']*3)
             cell_colors[i_descr + 1].extend(['w']*3)
+
+    # count the duration of gaps
+    gap_durations = []
+    for day in set(df['Date']):
+        df_day = df.query('Date == @day & Machine == @machine')
+        for i_study in range(len(df_day)):
+            # get the start time, end time and duration as hours with decimals
+            start_prep_hour = _as_hour(df_day.iloc[i_study]['Start Time Prep'])
+            # check if we have an overlap issue
+            if i_study > 0:
+                # get the end time of the last study
+                end_prev_prep_hour = _as_hour(df_day.iloc[i_study - 1]['End Time Prep'])
+                # check how long the gap was with previous study
+                gap_duration_hour = start_prep_hour - end_prev_prep_hour
+                gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
+                if gap_duration_hour * 60 >= gap_threshold:
+                    end_hours = df_day['End Time'].apply(_as_hour)
+                    if any([end_hour > end_prev_prep_hour and end_hour < start_prep_hour for end_hour in end_hours]):
+                        logging.info('Found gap but it is between an overlapping study and the next study, so skipping.')
+                    else:
+                        start_time = pd.to_datetime(df_day.iloc[i_study]['Start Time Prep'], format='%H%M%S')
+                        end_time = pd.to_datetime(df_day.iloc[i_study - 1]['End Time Prep'], format='%H%M%S')
+                        duration = start_time - end_time
+                        gap_durations.append(duration)
+
+    gap_durations = pd.Series(gap_durations)
+    # append the row headers
+    data.append(['TROUS'])
+    cell_colors.append(['w'])
+    # append the number of studies
+    data[-1].append(len(gap_durations))
+    cell_colors[-1].append('w')
+    # if there is at least one study of the current type
+    if len(gap_durations) > 0:
+        # add the mean, min and max values
+        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.mean().total_seconds(), -2)
+        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.min().total_seconds(), -2)
+        data, cell_colors = _add_cell_from_timedelta(data, cell_colors, gap_durations.max().total_seconds(), -2)
+
+    # if there are no study of the current type
+    else:
+        logging.debug('Appending empty cells for gaps because there is no data')
+        data[-1].extend(['-']*3)
+        cell_colors[-1].extend(['w']*3)
 
     # create the table and adjust its fontsize
     table = plt.table(cellText=data, cellLoc='center', loc='center',cellColours=cell_colors,

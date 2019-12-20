@@ -277,6 +277,10 @@ def mark_retakes(config, df_series):
     # create a column to mark the "take" index of the series. By default, everything is a first take
     df_series['i_take'] = None
 
+    # remove duplicates
+    df_series = df_series.drop_duplicates(['Patient ID', 'Start Time', 'End Time', 'Machine Group']).copy()
+    df_series.reset_index(drop=True, inplace=True)
+
     # build the list of rows to keep
     indices_to_keep = []
     for i_study in range(len(study_UIDs)):
@@ -303,31 +307,31 @@ def mark_retakes(config, df_series):
         # get the series where a split should be done
         df_series_split = df_series_for_study[df_series_for_study['time_to_prev'] > timedelta(seconds=study_split_thresh)]
 
-        # # also check whether there is a series from another study inbetween our study:
-        # # get all the other series that are for the same day, same machine, but different Study Instance UID
-        # df_series_other = df_series[
-        #     (df_series['Study Instance UID'] != sUID)
-        #     & (df_series['Date'] == df_series_for_study.iloc[0]['Date'])
-        #     & (df_series['Machine Group'] == df_series_for_study.iloc[0]['Machine Group'])]
-        # # get the start and end time of these other series
-        # start_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
-        # end_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
-        # # get the start and end time of the current study's series
-        # study_start = min(df_series_for_study['Start Time'])
-        # study_end = max(df_series_for_study['Start Time'])
-        # # get all the series that have their times inbetween our study
-        # df_series_inbetween = df_series_other[(start_times_other > study_start) & (end_times_other < study_end)]
-        # n_inbetween = len(df_series_inbetween)
-        # # if any inbetween series found
-        # if n_inbetween > 0:
-        #     # get the start time of the inbetween series
-        #     inbetween_start = min(pd.to_datetime(df_series_inbetween['Start Time'], format=FMT))
-        #     # get the series from our study that splits our study (last series before the inbetween series)
-        #     logging.info('Found {} series that are inbetween the start ({}) and end of study ({}): {}'
-        #         .format(n_inbetween, study_start.strftime('%H:%M:%S'), study_end.strftime('%H:%M:%S'), study_str))
-        #     new_series_split = df_series_for_study[df_series_for_study['Start Time'] > inbetween_start]\
-        #         .sort_values('Start Time')
-        #     df_series_split = df_series_split.append(new_series_split.iloc[0])
+        # also check whether there is a series from another study inbetween our study:
+        # get all the other series that are for the same day, same machine, but different Study Instance UID
+        df_series_other = df_series[
+            (df_series['Study Instance UID'] != sUID)
+            & (df_series['Date'] == df_series_for_study.iloc[0]['Date'])
+            & (df_series['Machine Group'] == df_series_for_study.iloc[0]['Machine Group'])]
+        # get the start and end time of these other series
+        start_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
+        end_times_other = pd.to_datetime(df_series_other['Start Time'], format=FMT)
+        # get the start and end time of the current study's series
+        study_start = min(df_series_for_study['Start Time'])
+        study_end = max(df_series_for_study['Start Time'])
+        # get all the series that have their times inbetween our study
+        df_series_inbetween = df_series_other[(start_times_other > study_start) & (end_times_other < study_end)]
+        n_inbetween = len(df_series_inbetween)
+        # if any inbetween series found
+        if n_inbetween > 0:
+            # get the start time of the inbetween series
+            inbetween_start = min(pd.to_datetime(df_series_inbetween['Start Time'], format=FMT))
+            # get the series from our study that splits our study (last series before the inbetween series)
+            logging.info('Found {} series that are inbetween the start ({}) and end of study ({}): {}'
+                .format(n_inbetween, study_start.strftime('%H:%M:%S'), study_end.strftime('%H:%M:%S'), study_str))
+            new_series_split = df_series_for_study[df_series_for_study['Start Time'] > inbetween_start]\
+                .sort_values('Start Time')
+            df_series_split = df_series_split.append(new_series_split.iloc[0])
 
         # if there is no splitting indices
         if len(df_series_split) == 0:
@@ -465,10 +469,12 @@ def add_preparation_times(config, df_studies):
         df_studies (DataFrame): a pandas DataFrame holding the studies, annotated with the preparation times
     """
 
+    logging.warning(f'Processing preparation times')
+
     # go through the studies machine by machine
     for machine in set(df_studies['Machine']):
 
-        logging.warning(f'Processing preparation times for {machine}')
+        logging.info(f'Processing preparation times for {machine}')
         # get all studies for this machine
         df_machine = df_studies.query('Machine == @machine')
         # get the number of minutes to add before and after each study for the current machine
@@ -531,6 +537,7 @@ def add_time_to_prev_and_next(config, df_studies):
 
     FMT = '%H%M%S'
     df = df_studies.copy()
+    logging.warning('Processing time-to-prev and time-to-next')
 
     # convert all the columns to datetime
     df['Start Time'] = pd.to_datetime(df['Start Time'], format=FMT)
@@ -563,3 +570,5 @@ def add_time_to_prev_and_next(config, df_studies):
     # copy the columns
     for col in ['time_to_prev', 'time_to_prev_prep', 'time_to_next', 'time_to_next', 'fully_contained']:
         df_studies.loc[df.index, col] = df[col]
+
+    return df_studies

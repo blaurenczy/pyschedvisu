@@ -583,8 +583,8 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
             .apply(lambda t: str(t).split('.')[0])
 
         # regroup the first and last instance rows on a single row
-        df_info_ctpt_merged = df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] == 1]\
-            .merge(df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'] > 1],
+        df_info_ctpt_merged = df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'].astype(int) == 1]\
+            .merge(df_info_ctpt_extended[df_info_ctpt_extended['InstanceNumber'].astype(int) > 1],
                    on=['SeriesInstanceUID', 'SeriesDate', 'PatientID', 'ManufacturerModelName',
                    'Modality'], suffixes=['_start', '_end'])
 
@@ -1116,7 +1116,7 @@ def delete_DICOM_files(config):
     """
 
     for filename in os.listdir(config['path']['dicom_temp_dir']):
-        file_path = os.path.join(config['path']['dicom_temp_dir'], filename)
+        file_path = os.path.join(config['path']['dicom_temp_dir'], filename).replace('\\', '/').replace('//', '/')
         try:
             if os.path.isfile(file_path) or os.path.islink(file_path):
                 os.unlink(file_path)
