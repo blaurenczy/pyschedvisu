@@ -216,7 +216,7 @@ def create_page(config, machine):
 
     # create the report, section by section
     create_header(config, fig, machine)
-    # create_notes(config, fig)
+    create_notes(config, fig, machine)
     create_schedule(config, fig, machine, df_machine)
     create_daily_table(config, fig, machine, df_machine)
     create_violin(config, fig, machine, df_machine)
@@ -315,23 +315,36 @@ def get_report_type(start_date, end_date):
     return report_type
 
 
-def create_notes(config, fig):
+def create_notes(config, fig, machine):
     """
     Create the notes section.
     Args:
         config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
         fig (Figure):   the matplotlib figure object for drawing
+        machine (str):  a string specifying the currently processed machine
     Returns:
         None
     """
 
     logging.info("Creating notes section")
 
-    # draw the notes
-    #c.drawString(15, -600, "Note\u00b9: le nombre de 'slot' est calculé sur la base de la " +\
-    #    "moyenne des {n_months_average_for_slot_number} derniers mois".format(**config))
-    #c.drawString(15, -615, "Note\u00b2: les trous sont définis comme des espaces d'au " +\
-    #    "moins {n_minutes_for_gap} minutes sans examens".format(**config))
+    machine_name =  machine.lower().replace(' ', '')
+    n_slots_per_day = config['draw']['n_study_per_day_' + machine_name].split(',')
+    n_slots_str = '(lun = {}, mar = {}, mer = {}, jeu = {}, ven = {})'.format(*n_slots_per_day)
+    if all([n_slots_per_day[0] == n_slot for n_slot in n_slots_per_day]):
+        n_slots_str = '({} examens par jour)'.format(n_slots_per_day[0])
+    gap_threshold = config['draw'].getint('gap_dur_minutes_' + machine_name)
+
+    fig.text(0.07, 0.29, "Note\u00b9: le nombre de 'plages' est défini comme le nombre maximum d'examens " +\
+        "possible sur cette machine {}."
+        .format(n_slots_str), fontsize=6, fontstyle='italic')
+    fig.text(0.07, 0.28, "Note\u00b2: les 'trous' sont définis comme des espaces d'au " +\
+        "moins {:d} minutes sans examens.".format(gap_threshold), fontsize=6, fontstyle='italic')
+    fig.text(0.07, 0.27, "Note\u00b3: Le % d'utilisation est défini comme le nombre " +\
+        "d'examens faits divisé par le nombre d'examens possible ('plage').", fontsize=6, fontstyle='italic')
+    fig.text(0.07, 0.26, "Note\u2074: Les examens avec reprise (par ex. OS3PHASE) sont divisés en deux " +\
+        "dans le tableau ci-dessous ([1] = première prise, [2] = seconde prise).",
+        fontsize=6, fontstyle='italic')
 
 def create_schedule(config, fig, machine, df):
     """
@@ -725,33 +738,39 @@ def create_daily_table(config, fig, machine, df):
             next_day = end_date
         i_day += 1
 
-        # get the data and calculate values for the current day range
+        # get the data and calculate different metrics for the current day range
         df_day = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}"'
-            .format(day.strftime('%Y%m%d'), next_day.strftime('%Y%m%d'), machine))
+            .format(day.strftime('%Y%m%d'), next_day.strftime('%Y%m%d'), machine)).copy()
+        # number of days in range
         n_days_in_range = len(set(df_day['Date']))
         if n_days_in_range == 0:
             if machine != 'Millennium':
                 logging.warning('Problem with day {}: n_days_in_range = {}, len(df_day) = {}!'
                     .format(day.strftime("%Y%m%d"), n_days_in_range, len(df_day)))
             n_days_in_range = 1
-        n_max_studies_per_day = config['draw'].getint('n_study_per_day_' + machine.lower().replace(' ', ''))
-        n_max_studies = n_max_studies_per_day * n_days_in_range
+        # number of study slots per day
+        machine_name =  machine.lower().replace(' ', '')
+        n_slots_per_day = pd.Series(config['draw']['n_study_per_day_' + machine_name].split(',')).astype(int)
+        df_day['Date_weekday'] = list(pd.to_datetime(df_day['Date']).apply(lambda x: x.weekday()))
+        days_list = pd.date_range(day, next_day, freq='B')
+        n_max_studies = int(sum([n_slots_per_day[day_item.weekday()] for day_item in days_list]))
+        # number of studies
         n_studies = len(df_day)
 
         # count the number of gaps
         n_gaps = 0
-        for i_study in range(len(df_day)):
-            # get the start time, end time and duration as hours with decimals
-            start_prep_hour = _as_hour(df_day.iloc[i_study]['Start Time Prep'])
-            # check if we have an overlap issue
-            if i_study > 0:
+        for gap_day in set(df_day['Date']):
+            df_gap_day = df_day.query('Date == @gap_day').copy()
+            for i_study in range(1, len(df_gap_day)):
+                # get the start time, end time and duration as hours with decimals
+                start_prep_hour = _as_hour(df_gap_day.iloc[i_study]['Start Time Prep'])
                 # get the end time of the last study
-                end_prev_prep_hour = _as_hour(df_day.iloc[i_study - 1]['End Time Prep'])
+                end_prev_prep_hour = _as_hour(df_gap_day.iloc[i_study - 1]['End Time Prep'])
                 # check how long the gap was with previous study
                 gap_duration_hour = start_prep_hour - end_prev_prep_hour
-                gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine.lower().replace(' ', ''))
+                gap_threshold = config['draw'].getfloat('gap_dur_minutes_' + machine_name)
                 if gap_duration_hour * 60 >= gap_threshold:
-                    end_hours = df_day['End Time'].apply(_as_hour)
+                    end_hours = df_gap_day['End Time'].apply(_as_hour)
                     if any([end_hour > end_prev_prep_hour and end_hour < start_prep_hour for end_hour in end_hours]):
                         logging.info('Found gap but it is between an overlapping study and the next study, so skipping.')
                     else:
@@ -795,7 +814,7 @@ def create_daily_table(config, fig, machine, df):
         data[i_row].append('{:3d}%'.format(int(100 * n_studies / n_max_studies)))
         cell_colors[i_row].append('w')
 
-    headers = ['Date', 'Slot', 'Exam.', 'Trous', 'Util.']
+    headers = ['Date', 'Plages', 'Exam.', 'Trous', 'Util.']
     # if we are not in a daily display mode, add a row for the number of days counting
     if days_range.freq.name != 'B': headers.insert(1, 'Jours')
     header_colors = ['lightgray'] * len(headers)
@@ -857,7 +876,7 @@ def create_violin(config, fig, machine, df):
     logging.info("Creating violin plot section")
 
     # add new axes
-    vio_ax = fig.add_axes([0.09, 0.07, 0.40, 0.19], anchor='NE')
+    vio_ax = fig.add_axes([0.09, 0.07, 0.40, 0.18], anchor='NE')
 
     # get the starting and ending dates, and the days range from the config
     start_date, end_date, days_range = main.get_day_range(config)
@@ -933,7 +952,7 @@ def create_stat_table(config, fig, machine, df):
     logging.info("Creating statistics table section")
 
     # add new axes
-    table_ax = fig.add_axes([0.51, 0.02, 0.47, 0.34], anchor='NE')
+    table_ax = fig.add_axes([0.51, 0.01, 0.47, 0.29], anchor='NE')
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
@@ -977,9 +996,9 @@ def create_stat_table(config, fig, machine, df):
         # append the row headers
         descr_label = descr.replace('OTHER', 'AUTRE')
         if retake_filt == '== 1':
-            descr_label += ' (1 )'
+            descr_label += ' [1]'
         elif retake_filt == '>= 2':
-            descr_label += ' (2+)'
+            descr_label += ' [2]'
         data.append([descr_label])
         cell_colors.append([colors[descriptions.index(descr)]])
 
