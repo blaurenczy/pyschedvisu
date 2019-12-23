@@ -76,9 +76,24 @@ def create_report(config):
     bookmarks, i_page = [], 0
     bookmarks.append(Bookmark(title='Rapport pySchedVisu', page=i_page, parent=None))
 
-    # create the multi-page report
+    # create the timestamps of generation
     now_str = dt.now().strftime('%Y-%m-%d_%Hh%M')
-    pdf_output_path = '{}/pySchedVisu_rapport_du_{}.pdf'.format(config['path']['output_dir'], now_str)
+    now_year = dt.now().strftime('%Y')
+
+    # make sure the output directory exists
+    output_dir = config['path']['output_dir'] + '/' + now_year
+
+    try:
+        if not os.path.exists(output_dir): os.makedirs(output_dir)
+    except:
+        old_output_dir = output_dir
+        output_dir = 'C:/TEMP/pySchedVisu/output/' + now_year
+        if not os.path.exists(output_dir): os.makedirs(output_dir)
+        logging.error('Could not create output directory at "{}". Created it at "{}" instead.'
+            .format(old_output_dir, output_dir))
+
+    # create the multi-page report
+    pdf_output_path = '{}/pySchedVisu_rapport_du_{}.pdf'.format(output_dir, now_str)
     with PdfPages(pdf_output_path) as pdf:
 
         # either go through all available machines, or use the list specified by the config
@@ -105,7 +120,7 @@ def create_report(config):
                 bookmarks.append(Bookmark(title=report_type, page=i_page, parent=machine))
 
                 # create one page of the report
-                create_page(local_config, machine)
+                create_page(local_config, machine, output_dir)
                 i_page += 1
 
                 # save the page
@@ -174,12 +189,13 @@ def add_bookmarks(pdf_output_path, bookmarks):
     # overwrite report
     shutil.move(temp_path, pdf_output_path)
 
-def create_page(config, machine):
+def create_page(config, machine, output_dir):
     """
     Create one page of the report
     Args:
-        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
-        machine (str):  a string specifying the currently processed machine
+        config (dict):      a dictionary holding all parameters for generating the report (dates, etc.)
+        machine (str):      a string specifying the currently processed machine
+        output_dir (str):   directory where to save the images if needed
     Returns:
         None
     """
@@ -225,7 +241,7 @@ def create_page(config, machine):
     if config['draw'].getboolean('debug_save_as_image'):
         #plt.show()
         logging.info("Saving PDF file")
-        im_output_path = '{}/output_{}_{}_{}_{}'.format(config['path']['output_dir'],
+        im_output_path = '{}/output_{}_{}_{}_{}'.format(output_dir,
             machine.lower().replace(' ', ''), report_type.replace(' ', ''),
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
         fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
@@ -340,8 +356,8 @@ def create_notes(config, fig, machine):
         .format(n_slots_str), fontsize=6, fontstyle='italic')
     fig.text(0.07, 0.28, "Note\u00b2: les 'trous' sont définis comme des espaces d'au " +\
         "moins {:d} minutes sans examens.".format(gap_threshold), fontsize=6, fontstyle='italic')
-    fig.text(0.07, 0.27, "Note\u00b3: Le % d'utilisation est défini comme le nombre " +\
-        "d'examens faits divisé par le nombre d'examens possible ('plage').", fontsize=6, fontstyle='italic')
+    fig.text(0.07, 0.27, "Note\u00b3: Le pourcentage d'utilisation est défini comme le nombre " +\
+        "d'examens faits ('Exam.') divisé par le nombre d'examens possible ('Plages').", fontsize=6, fontstyle='italic')
     fig.text(0.07, 0.26, "Note\u2074: Les examens avec reprise (par ex. OS3PHASE) sont divisés en deux " +\
         "dans le tableau ci-dessous ([1] = première prise, [2] = seconde prise).",
         fontsize=6, fontstyle='italic')
@@ -553,8 +569,10 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
 
         # define colors
         descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
-        colors = colors = config['draw']['colors'].split(',')
+        colors = config['draw']['colors'].split(',')
         i_descr = descr_list.index(study['Description'])
+        # make sure the last color for "OTHER" is always the same in all machines
+        colors[len(descr_list) - 1] = colors[-1]
 
         # check if the current study is a retake
         try:
@@ -644,6 +662,8 @@ def create_schedule_distribution_plot(config, fig, machine, df):
     # define colors
     descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
     colors = colors = config['draw']['colors'].split(',')
+    # make sure the last color for "OTHER" is always the same in all machines
+    colors[len(descr_list) - 1] = colors[-1]
 
     # add new axes
     distr_ax = fig.add_axes([0.86, 0.42, 0.12, 0.39], anchor='NE')
@@ -882,35 +902,67 @@ def create_violin(config, fig, machine, df):
     start_date, end_date, days_range = main.get_day_range(config)
 
     # get the list of descriptions for the currently processed machine
-    descr_list = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
+    descriptions = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
     colors = config['draw']['colors'].split(',')
+    # make sure the last color for "OTHER" is always the same in all machines
+    colors[len(descriptions) - 1] = colors[-1]
+
+    # create a column for retakes
+    df = df.copy()
+    start_times = pd.to_datetime(df['Start Time'], format='%H%M%S')
+    end_times = pd.to_datetime(df['End Time'], format='%H%M%S')
+    df['duration'] = end_times - start_times
+    df['i_take'] = list(df.reset_index()['SUID'].apply(lambda x: x.split('_')[-1]))
+    df['i_take'] = df['i_take'].astype(int)
+
+    # go through each study type
+    descriptions_with_retakes = []
+    retake_filters = []
+    for descr in descriptions:
+        if descr in config['draw']['retake_descriptions'].split(','):
+            descriptions_with_retakes.append(descr)
+            retake_filters.append('== 1')
+            descriptions_with_retakes.append(descr)
+            retake_filters.append('>= 2')
+        else:
+            descriptions_with_retakes.append(descr)
+            retake_filters.append('>= 1')
 
     # define the variables storing the durations, the labels, etc.
     data, descr_names, x_positions = [], [], []
 
     # go through each study type
-    for i_descr in range(len(descr_list)):
+    i_descr = 0
+    for descr, retake_filt in zip(descriptions_with_retakes, retake_filters):
         # get the data and calculate values for the current day
-        df_descr = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}" & Description == "{}"'
-            .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'), machine, descr_list[i_descr]))
+        df_descr = df.query('Date >= "{}" & Date <= "{}" & Machine == "{}" & Description == "{}" & i_take {}'
+            .format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'), machine, descr, retake_filt))
         # calculate the durations
         if len(df_descr) > 0:
             start_times = pd.to_datetime(df_descr['Start Time'], format='%H%M%S')
             end_times = pd.to_datetime(df_descr['End Time'], format='%H%M%S')
             durations = (end_times - start_times).apply(lambda dur: dur.total_seconds() / 60)
             data.append(durations.values)
-            descr_names.append(descr_list[i_descr])
+            descr_label = descr.replace('OTHER', 'AUTRE')
+            if retake_filt == '== 1':
+                descr_label += ' [1]'
+            elif retake_filt == '>= 2':
+                descr_label += ' [2]'
+            descr_names.append(descr_label)
             x_positions.append(i_descr)
+
+        i_descr += 1
 
     results = vio_ax.violinplot(data, x_positions, showmeans=True, showextrema=True, showmedians=False)
     plt.ylabel('Durée (minutes)')
-    plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=8)
+    plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=7)
     plt.xlim([-0.5, 9.5])
 
     # adjust the colors
     for i_body in range(len(results['bodies'])):
-        results['bodies'][i_body].set_edgecolor(colors[x_positions[i_body]])
-        results['bodies'][i_body].set_facecolor(_lighten_color(colors[x_positions[i_body]], 0.7))
+        col = colors[descriptions.index(descriptions_with_retakes[x_positions[i_body]])]
+        results['bodies'][i_body].set_edgecolor(col)
+        results['bodies'][i_body].set_facecolor(_lighten_color(col, 0.7))
         results['bodies'][i_body].set_alpha(1)
         results['cmeans'].set_color('black')
         results['cmeans'].set_alpha(0.4)
@@ -961,6 +1013,8 @@ def create_stat_table(config, fig, machine, df):
     # get the list of descriptions for the currently processed machine
     descriptions = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
     colors = config['draw']['colors'].split(',')
+    # make sure the last color for "OTHER" is always the same in all machines
+    colors[len(descriptions) - 1] = colors[-1]
 
     # initialize the variable holding all the information to be displayed in the table
     data = [['DESCRIPTION', 'N.EXA', 'MOY', 'MIN', 'MAX']]

@@ -122,6 +122,27 @@ def load_transform_and_save_data_from_files(config):
         # create the description consensus
         df_studies_for_day = create_description_consensus(config, df_studies_for_day)
         df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])
+
+        # correct for VENT PERF. studies that are split into two parts
+        df_vent_perf = df_studies_for_day.reset_index().query('Description == "VENT PERF."')\
+            .groupby(['Patient ID', 'Date', 'Description', 'Machine']).agg({
+                'SUID': lambda x: x.iloc[0],
+                'Patient ID': lambda x: x.iloc[0],
+                'Date': lambda x: x.iloc[0],
+                'Description': lambda x: x.iloc[0],
+                'Machine': lambda x: x.iloc[0],
+                'Study Description': lambda x: ' / '.join(set(x)),
+                'Modality': lambda x: '/'.join(set(x)).replace('CT/CT', 'CT').replace('NM/NM', 'NM'),
+                'Machine Group': lambda x: x.iloc[0],
+                'Start Time': 'min',
+                'End Time': 'max'}).set_index('SUID')
+
+        if len(df_vent_perf) > 0:
+            logging.warning('Found {} studies to replace with VENT PERF.'.format(len(df_vent_perf)))
+            df_studies_for_day = df_studies_for_day[df_studies_for_day['Description'] != 'VENT PERF.']
+            df_studies_for_day = pd.concat([df_studies_for_day, df_vent_perf], sort=False)\
+                .sort_values(['Start Time', 'Machine Group', 'SUID'])
+
         # add the preparation times before and after each study
         df_studies_for_day = add_preparation_times(config, df_studies_for_day)
         df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])

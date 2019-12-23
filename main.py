@@ -6,6 +6,7 @@ This is the master script running all the steps.
 
 import logging
 import codecs
+import os
 
 import smtplib
 from email.message import EmailMessage
@@ -16,11 +17,9 @@ from datetime import datetime as dt
 from datetime import timedelta
 from configparser import ConfigParser
 
-import os
-os.chdir('C:/TEMP/pySchedVisu/code')
-
-import sys
-sys.path.append('src')
+# remove MATPLOTLIBDATA warning
+import warnings
+warnings.filterwarnings("ignore")
 
 import retrieve_data
 import extract_data
@@ -122,7 +121,7 @@ def load_config():
     # read in the configuration file
     config = ConfigParser()
     config.optionxform = str
-    with codecs.open(config_path, "r", "utf-8") as f:
+    with codecs.open(config_path, "r", "utf-8-sig") as f:
         config.read_file(f)
 
     return config
