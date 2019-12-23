@@ -138,7 +138,7 @@ def load_transform_and_save_data_from_files(config):
                 'End Time': 'max'}).set_index('SUID')
 
         if len(df_vent_perf) > 0:
-            logging.warning('Found {} studies to replace with VENT PERF.'.format(len(df_vent_perf)))
+            logging.info('Found {} studies to replace with VENT PERF.'.format(len(df_vent_perf)))
             df_studies_for_day = df_studies_for_day[df_studies_for_day['Description'] != 'VENT PERF.']
             df_studies_for_day = pd.concat([df_studies_for_day, df_vent_perf], sort=False)\
                 .sort_values(['Start Time', 'Machine Group', 'SUID'])

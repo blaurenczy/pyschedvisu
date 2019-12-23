@@ -77,8 +77,9 @@ def create_report(config):
     bookmarks.append(Bookmark(title='Rapport pySchedVisu', page=i_page, parent=None))
 
     # create the timestamps of generation
-    now_str = dt.now().strftime('%Y-%m-%d_%Hh%M')
-    now_year = dt.now().strftime('%Y')
+    create_dt = dt.now()
+    now_str = create_dt.strftime('%Y-%m-%d_%Hh%M')
+    now_year = create_dt.strftime('%Y')
 
     # make sure the output directory exists
     output_dir = config['path']['output_dir'] + '/' + now_year
@@ -120,7 +121,7 @@ def create_report(config):
                 bookmarks.append(Bookmark(title=report_type, page=i_page, parent=machine))
 
                 # create one page of the report
-                create_page(local_config, machine, output_dir)
+                create_page(local_config, machine, output_dir, create_dt, pdf_output_path)
                 i_page += 1
 
                 # save the page
@@ -189,13 +190,15 @@ def add_bookmarks(pdf_output_path, bookmarks):
     # overwrite report
     shutil.move(temp_path, pdf_output_path)
 
-def create_page(config, machine, output_dir):
+def create_page(config, machine, output_dir, create_dt, pdf_output_path):
     """
     Create one page of the report
     Args:
-        config (dict):      a dictionary holding all parameters for generating the report (dates, etc.)
-        machine (str):      a string specifying the currently processed machine
-        output_dir (str):   directory where to save the images if needed
+        config (dict):          a dictionary holding all parameters for generating the report (dates, etc.)
+        machine (str):          a string specifying the currently processed machine
+        output_dir (str):       directory where to save the images if needed
+        create_dt (datetime):   datetime object representing the creation time
+        pdf_output_path (str):  path where the output PDF is saved
     Returns:
         None
     """
@@ -231,7 +234,7 @@ def create_page(config, machine, output_dir):
     fig = plt.figure(figsize=[8.27, 11.69], dpi=config['draw'].getint('dpi'))
 
     # create the report, section by section
-    create_header(config, fig, machine)
+    create_header(config, fig, machine, create_dt, pdf_output_path)
     create_notes(config, fig, machine)
     create_schedule(config, fig, machine, df_machine)
     create_daily_table(config, fig, machine, df_machine)
@@ -247,13 +250,15 @@ def create_page(config, machine, output_dir):
         fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
         fig.savefig(im_output_path + '.png', orientation='portrait', papertype='a4', format='png')
 
-def create_header(config, fig, machine):
+def create_header(config, fig, machine, create_dt, pdf_output_path):
     """
     Create the header section with the logo, the header text, the dates, etc.
     Args:
-        config (dict):  a dictionary holding all parameters for generating the report (dates, etc.)
-        fig (Figure):   the matplotlib figure object for drawing
-        machine (str):  a string specifying the currently processed machine
+        config (dict):          a dictionary holding all parameters for generating the report (dates, etc.)
+        fig (Figure):           the matplotlib figure object for drawing
+        machine (str):          a string specifying the currently processed machine
+        create_dt (datetime):   datetime object representing the creation time
+        pdf_output_path (str):  path where the output PDF is saved
     Returns:
         None
     """
@@ -272,8 +277,12 @@ def create_header(config, fig, machine):
     plt.rcParams["font.family"] = "monospace"
     fig.text(0.62, 0.97, "Rapport {}".format(report_type), fontsize=15)
     fig.text(0.62, 0.93, "Semaine{} {}".format('s' if len(week_numbers) > 1 else '', week_numbers_str), fontsize=25, fontweight='bold')
-    fig.text(0.63, 0.89, "du {}".format(start_date.strftime("%d/%m/%Y")), fontsize=20)
-    fig.text(0.63, 0.86, "au {}".format(end_date.strftime("%d/%m/%Y")), fontsize=20)
+    fig.text(0.63, 0.895, "du {}".format(start_date.strftime("%d/%m/%Y")), fontsize=20)
+    fig.text(0.63, 0.87, "au {}".format(end_date.strftime("%d/%m/%Y")), fontsize=20)
+    fig.text(0.63, 0.85, "Généré le {}".format(create_dt.strftime("%d/%m/%Y %H:%M:%S")),
+        fontsize=8, fontstyle='italic')
+    fig.text(0.98, 0.015, "Rapport sauvé sous \"{}\"".format(pdf_output_path), fontsize=5, fontstyle='italic',
+        horizontalalignment='right')
 
     # machine name
     if len(machine) > 10:
@@ -283,14 +292,14 @@ def create_header(config, fig, machine):
 
     im_machine_path = '{}/images/{}.png'.format(os.getcwd(), machine.lower().replace(' ', '')).replace('/', '\\')
     im_machine = plt.imread(get_sample_data(im_machine_path))
-    im_machine_ax = fig.add_axes([0.40, 0.815, 0.21, 0.04], anchor='NE')
+    im_machine_ax = fig.add_axes([0.33, 0.81, 0.28, 0.15], anchor='NE')
     im_machine_ax.imshow(im_machine)
     im_machine_ax.axis('off')
 
     # draw the schedVisu logo
-    im_logo_path = '{}/images/schedvisu_logo_transp.png'.format(os.getcwd()).replace('/', '\\')
+    im_logo_path = '{}/images/pyschedvisu_logo.png'.format(os.getcwd()).replace('/', '\\')
     im_log = plt.imread(get_sample_data(im_logo_path))
-    im_logo_ax = fig.add_axes([0.04, 0.83, 0.28, 0.15], anchor='NE')
+    im_logo_ax = fig.add_axes([0.05, 0.89, 0.21, 0.08], anchor='NE')
     im_logo_ax.imshow(im_log)
     im_logo_ax.axis('off')
 
@@ -351,14 +360,14 @@ def create_notes(config, fig, machine):
         n_slots_str = '({} examens par jour)'.format(n_slots_per_day[0])
     gap_threshold = config['draw'].getint('gap_dur_minutes_' + machine_name)
 
-    fig.text(0.07, 0.29, "Note\u00b9: le nombre de 'plages' est défini comme le nombre maximum d'examens " +\
+    fig.text(0.07, 0.295, "Note\u00b9: le nombre de 'plages' est défini comme le nombre maximum d'examens " +\
         "possible sur cette machine {}."
         .format(n_slots_str), fontsize=6, fontstyle='italic')
-    fig.text(0.07, 0.28, "Note\u00b2: les 'trous' sont définis comme des espaces d'au " +\
+    fig.text(0.07, 0.285, "Note\u00b2: les 'trous' sont définis comme des espaces d'au " +\
         "moins {:d} minutes sans examens.".format(gap_threshold), fontsize=6, fontstyle='italic')
-    fig.text(0.07, 0.27, "Note\u00b3: Le pourcentage d'utilisation est défini comme le nombre " +\
+    fig.text(0.07, 0.275, "Note\u00b3: Le pourcentage d'utilisation est défini comme le nombre " +\
         "d'examens faits ('Exam.') divisé par le nombre d'examens possible ('Plages').", fontsize=6, fontstyle='italic')
-    fig.text(0.07, 0.26, "Note\u2074: Les examens avec reprise (par ex. OS3PHASE) sont divisés en deux " +\
+    fig.text(0.07, 0.265, "Note\u2074: Les examens avec reprise (par ex. OS3PHASE) sont divisés en deux " +\
         "dans le tableau ci-dessous ([1] = première prise, [2] = seconde prise).",
         fontsize=6, fontstyle='italic')
 
@@ -956,7 +965,7 @@ def create_violin(config, fig, machine, df):
     results = vio_ax.violinplot(data, x_positions, showmeans=True, showextrema=True, showmedians=False)
     plt.ylabel('Durée (minutes)')
     plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=7)
-    plt.xlim([-0.5, 9.5])
+    plt.xlim([-0.5, i_descr - 0.5])
 
     # adjust the colors
     for i_body in range(len(results['bodies'])):
