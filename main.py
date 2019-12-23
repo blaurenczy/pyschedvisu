@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
-"""
-This is the master script running all the steps.
-"""
+# remove MATPLOTLIBDATA warning
+import warnings
+warnings.filterwarnings("ignore")
 
 import logging
 import codecs
@@ -16,10 +16,6 @@ import pandas as pd
 from datetime import datetime as dt
 from datetime import timedelta
 from configparser import ConfigParser
-
-# remove MATPLOTLIBDATA warning
-import warnings
-warnings.filterwarnings("ignore")
 
 import retrieve_data
 import extract_data
@@ -116,6 +112,8 @@ def load_config():
     config_path = 'config.ini'
     if not os.path.isfile(config_path):
         print(f'ERROR: Could not file config file at "{config_path}".')
+        print(f'ERROR: Are you sure you copied the "{config_path}" file to the same directory where "main.exe" is?')
+        input()
         return None
 
     # read in the configuration file

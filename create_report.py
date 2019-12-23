@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 
+# remove MATPLOTLIBDATA warning
+import warnings
+warnings.filterwarnings("ignore")
+
 import logging
 import pandas as pd
 import os
