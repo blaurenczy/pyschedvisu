@@ -285,8 +285,8 @@ def create_header(config, fig, machine, create_dt, pdf_output_path):
     fig.text(0.63, 0.87, "au {}".format(end_date.strftime("%d/%m/%Y")), fontsize=20)
     fig.text(0.63, 0.85, "Généré le {}".format(create_dt.strftime("%d/%m/%Y %H:%M:%S")),
         fontsize=8, fontstyle='italic')
-    fig.text(0.98, 0.015, "Rapport sauvé sous \"{}\"".format(pdf_output_path), fontsize=5, fontstyle='italic',
-        horizontalalignment='right')
+    fig.text(0.98, 0.015, "Rapport sauvé sous \"{}\"".format(pdf_output_path.replace('\\', '/')),
+        fontsize=5, fontstyle='italic', horizontalalignment='right')
 
     # machine name
     if len(machine) > 10:
@@ -616,19 +616,19 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
 
         if config['draw'].getboolean('debug_draw_prep_time'):
             # create the shape and plot it
-            rounded_rect_prep = FancyBboxPatch((x_prep, y_prep), box_w_prep, h_prep,
-                boxstyle="round,pad=-0.0040,rounding_size=0.155", fc=colors[i_descr], ec=edge_color, alpha=0.55,
-                mutation_aspect=0.3, label=study.name + '_prep')
+            rounded_rect_prep = Rectangle((x_prep, y_prep), box_w_prep, h_prep,
+                fc=colors[i_descr], ec=edge_color, label=study.name + '_prep')
             sched_ax.add_patch(rounded_rect_prep)
 
             # create the shape and plot it
-            rounded_rect = Rectangle((x, y), box_w, h, fc=colors[i_descr], ec=edge_color, hatch=hatch, label=study.name)
+            rounded_rect = Rectangle((x, y), box_w, h, fc=colors[i_descr], ec='black',
+                hatch=hatch, alpha=0.3, label=study.name)
             sched_ax.add_patch(rounded_rect)
 
         else:
             # create the shape and plot it
-            rounded_rect = FancyBboxPatch((x, y), box_w, h, boxstyle="round,pad=-0.0040,rounding_size=0.155",
-                fc=colors[i_descr], ec=edge_color, mutation_aspect=0.3, hatch=hatch, label=study.name)
+            rounded_rect = Rectangle((x, y), box_w, h, fc=colors[i_descr], ec=edge_color,
+                hatch=hatch, label=study.name)
             sched_ax.add_patch(rounded_rect)
 
         # DEBUG show information string
