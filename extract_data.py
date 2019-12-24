@@ -14,7 +14,7 @@ from copy import deepcopy
 from datetime import timedelta
 from datetime import datetime as dt
 
-import main
+import utils
 
 def load_transform_and_save_data_from_files(config):
     """
@@ -26,7 +26,7 @@ def load_transform_and_save_data_from_files(config):
     """
 
     # get the date range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
     # initialize the save path's location
     studies_save_path = config['path']['studies_db_save_path']
     series_save_path = config['path']['series_db_save_path']
@@ -211,7 +211,7 @@ def load_data_from_files(config):
     logging.debug("Loading data from files")
 
     # get the date range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
     # create the variable holding all the series for all days
     df_series = None
 

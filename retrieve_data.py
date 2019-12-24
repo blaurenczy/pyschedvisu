@@ -31,7 +31,7 @@ from pynetdicom.sop_class import (
     PatientRootQueryRetrieveInformationModelMove
 )
 
-import main
+import utils
 
 def retrieve_and_save_data_from_PACS(config):
     """
@@ -45,7 +45,7 @@ def retrieve_and_save_data_from_PACS(config):
     logging.info("Retrieving data from PACS")
 
     # get the date range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
 
     # go through the date range day by day
     for day in days_range:

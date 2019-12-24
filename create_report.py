@@ -12,7 +12,7 @@ import shutil
 
 import matplotlib.pyplot as plt
 from matplotlib.cbook import get_sample_data
-from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 
 import matplotlib.colors as mc
@@ -26,7 +26,7 @@ from datetime import datetime as dt
 
 from PyPDF2 import PdfFileWriter, PdfFileReader
 
-import main
+import utils
 import extract_data
 
 def create_report(config):
@@ -40,7 +40,7 @@ def create_report(config):
     """
 
     # get the date ranges
-    start_date_global, end_date_global, _ = main.get_day_range(config)
+    start_date_global, end_date_global, _ = utils.get_day_range(config)
 
     # output a single page with all the data in one report per machine
     if config['main']['mode'] == 'single':
@@ -79,7 +79,7 @@ def create_report(config):
             date_ranges.append({ 'start': year_start, 'end': prev_friday })
 
         if 'longueduree'    in config['main']['report_range'].split(','):
-            multi_year_start = prev_friday.replace(day=1).replace(month=1)
+            multi_year_start = prev_friday.replace(day=1).replace(month=1)\
                 .replace(year=config['main'].getint('report_year_start'))
             date_ranges.append({ 'start': multi_year_start, 'end': prev_friday })
 
@@ -216,7 +216,7 @@ def create_page(config, machine, output_dir, create_dt, pdf_output_path):
     """
 
     # get the date ranges
-    start_date, end_date, _ = main.get_day_range(config)
+    start_date, end_date, _ = utils.get_day_range(config)
 
     # load the relevant studies
     logging.info("Reading in studies")
@@ -278,7 +278,7 @@ def create_header(config, fig, machine, create_dt, pdf_output_path):
     logging.info("Creating header section")
 
     # analyse the week numbers
-    start_date, end_date, _ = main.get_day_range(config)
+    start_date, end_date, _ = utils.get_day_range(config)
     n_days = (end_date - start_date).days
     week_numbers = sorted(list(set([start_date.strftime('%V'), end_date.strftime('%V')])))
     week_numbers_str = '-'.join(week_numbers)
@@ -302,28 +302,37 @@ def create_header(config, fig, machine, create_dt, pdf_output_path):
     else:
         fig.text(0.04, 0.83, 'Machine: ' + machine, fontsize=18)
 
-    im_machine_path = '{}/images/{}.png'.format(os.getcwd(), machine.lower().replace(' ', '')).replace('/', '\\')
+    im_dir = '{}/images'.format(os.getcwd())
+    if not os.path.isdir(im_dir):
+        im_dir = os.path.abspath('{}/../../images'.format(os.getcwd()))
+        logging.warning(f'Cannot find "images" directory. Trying parent folder "{str(im_dir)}"...')
+    if not os.path.isdir(im_dir):
+        logging.error('Cannot find "images" directory. No images will be loaded or used.')
+        return
+
+    im_dir = str(im_dir)
+    im_machine_path = '{}/{}.png'.format(im_dir, machine.lower().replace(' ', '')).replace('/', '\\')
     im_machine = plt.imread(get_sample_data(im_machine_path))
     im_machine_ax = fig.add_axes([0.33, 0.81, 0.28, 0.15], anchor='NE')
     im_machine_ax.imshow(im_machine)
     im_machine_ax.axis('off')
 
     # draw the schedVisu logo
-    im_logo_path = '{}/images/pyschedvisu_logo.png'.format(os.getcwd()).replace('/', '\\')
+    im_logo_path = '{}/pyschedvisu_logo.png'.format(im_dir).replace('/', '\\')
     im_log = plt.imread(get_sample_data(im_logo_path))
     im_logo_ax = fig.add_axes([0.05, 0.89, 0.21, 0.08], anchor='NE')
     im_logo_ax.imshow(im_log)
     im_logo_ax.axis('off')
 
     # draw the CHUV logo
-    im_chuv_logo_path = '{}/images/chuv.png'.format(os.getcwd()).replace('/', '\\')
+    im_chuv_logo_path = '{}/chuv.png'.format(im_dir).replace('/', '\\')
     im_chuv_log = plt.imread(get_sample_data(im_chuv_logo_path))
     im_chuv_logo_ax = fig.add_axes([0.04, 0.75, 0.28, 0.15], anchor='NE')
     im_chuv_logo_ax.imshow(im_chuv_log)
     im_chuv_logo_ax.axis('off')
 
     # draw the VD logo
-    im_vd_logo_path = '{}/images/vd.png'.format(os.getcwd()).replace('/', '\\')
+    im_vd_logo_path = '{}/vd.png'.format(im_dir).replace('/', '\\')
     im_vd_log = plt.imread(get_sample_data(im_vd_logo_path))
     im_vd_logo_ax = fig.add_axes([0.02, 0.24, 0.02, 0.05], anchor='NE')
     im_vd_logo_ax.imshow(im_vd_log)
@@ -416,14 +425,14 @@ def create_schedule_plot(config, fig, machine, df):
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
 
     # create the new axes
     sched_ax = fig.add_axes([0.08, 0.42, 0.78, 0.39], anchor='NE')
     sched_ax.invert_yaxis()
 
     # create the ticks and labels, with a reduced frequency
-    _, _, days_range_xticks = main.get_day_range(config, reduce_freq=True)
+    _, _, days_range_xticks = utils.get_day_range(config, reduce_freq=True)
     days_xticks, days_xtick_labels = [], []
 
     # plot each day
@@ -518,7 +527,7 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
     """
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
     n_days = (end_date - start_date).days
     # initialize some variables related to the dates
     day_str = day.strftime('%Y%m%d')
@@ -669,7 +678,7 @@ def create_schedule_distribution_plot(config, fig, machine, df):
     """
 
     # check whether the distribution plot should be done or not
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
     if len(days_range) < 7 * 12: return
 
     # define some parameters for the distribution
@@ -757,7 +766,7 @@ def create_daily_table(config, fig, machine, df):
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = main.get_day_range(config, reduce_freq=True)
+    start_date, end_date, days_range = utils.get_day_range(config, reduce_freq=True)
 
     # initialize the variable holding all the information to be displayed in the table
     data = [[],[],[],[],[]]
@@ -920,7 +929,7 @@ def create_violin(config, fig, machine, df):
     vio_ax = fig.add_axes([0.09, 0.07, 0.40, 0.18], anchor='NE')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
 
     # get the list of descriptions for the currently processed machine
     descriptions = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
@@ -1029,7 +1038,7 @@ def create_stat_table(config, fig, machine, df):
     table_ax.axis('off')
 
     # get the starting and ending dates, and the days range from the config
-    start_date, end_date, days_range = main.get_day_range(config)
+    start_date, end_date, days_range = utils.get_day_range(config)
 
     # get the list of descriptions for the currently processed machine
     descriptions = list(config['description_' + machine.lower().replace(' ', '')].keys()) + ['OTHER']
