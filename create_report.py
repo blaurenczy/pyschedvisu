@@ -305,7 +305,7 @@ def create_header(config, fig, machine, create_dt, pdf_output_path):
     im_dir = '{}/images'.format(os.getcwd())
     if not os.path.isdir(im_dir):
         im_dir = os.path.abspath('{}/../../images'.format(os.getcwd()))
-        logging.warning(f'Cannot find "images" directory. Trying parent folder "{str(im_dir)}"...')
+        logging.info(f'Cannot find "images" directory. Trying parent folder "{str(im_dir)}"...')
     if not os.path.isdir(im_dir):
         logging.error('Cannot find "images" directory. No images will be loaded or used.')
         return
