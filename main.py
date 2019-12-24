@@ -149,7 +149,7 @@ def get_day_range(config, reduce_freq=False):
 
     # if auto mode for report
     if config['main']['start_date'] == 'auto' and config['main']['mode'] == 'report':
-        start_date = dt(2016,1,1)
+        start_date = dt(config['main'].getint('report_year_start'), 1, 1)
     else:
         start_date = dt.strptime(config['main']['start_date'], '%Y%m%d')
 

@@ -49,31 +49,39 @@ def create_report(config):
     # output a multiples pages with the data in multiple report per machine and per date ranges
     if config['main']['mode'] == 'report':
 
+        # creat a list of date ranges
         prev_friday = end_date_global - timedelta(days=end_date_global.weekday() - 4)
         if prev_friday > end_date_global: prev_friday = prev_friday - timedelta(days=7)
-        previous_monday_1W = prev_friday - timedelta(days= 5 +  0 * 7 - 1)
-        previous_monday_2W = prev_friday - timedelta(days= 5 +  1 * 7 - 1)
-        previous_monday_4W = prev_friday - timedelta(days= 5 +  3 * 7 - 1)
-        previous_monday_3M = prev_friday - timedelta(days= 5 + 11 * 7 - 1)
-        previous_monday_6M = prev_friday - timedelta(days= 5 + 23 * 7 - 1)
-        previous_monday_1Y = prev_friday.replace(day=1).replace(month=1)
-        previous_monday_4Y = previous_monday_1Y.replace(year=prev_friday.year - 3)
 
         date_ranges = []
         if 'hebdomadaire'   in config['main']['report_range'].split(','):
+            previous_monday_1W = prev_friday - timedelta(days= 5 +  0 * 7 - 1)
             date_ranges.append({ 'start': previous_monday_1W, 'end': prev_friday })
+
         if 'bimensuel'      in config['main']['report_range'].split(','):
+            previous_monday_2W = prev_friday - timedelta(days= 5 +  1 * 7 - 1)
             date_ranges.append({ 'start': previous_monday_2W, 'end': prev_friday })
+
         if 'mensuel'        in config['main']['report_range'].split(','):
+            previous_monday_4W = prev_friday - timedelta(days= 5 +  3 * 7 - 1)
             date_ranges.append({ 'start': previous_monday_4W, 'end': prev_friday })
+
         if 'trimestriel'    in config['main']['report_range'].split(','):
+            previous_monday_3M = prev_friday - timedelta(days= 5 + 11 * 7 - 1)
             date_ranges.append({ 'start': previous_monday_3M, 'end': prev_friday })
+
         if 'semestriel'     in config['main']['report_range'].split(','):
+            previous_monday_6M = prev_friday - timedelta(days= 5 + 23 * 7 - 1)
             date_ranges.append({ 'start': previous_monday_6M, 'end': prev_friday })
+
         if 'annuel'         in config['main']['report_range'].split(','):
-            date_ranges.append({ 'start': previous_monday_1Y, 'end': prev_friday })
+            year_start = prev_friday.replace(day=1).replace(month=1)
+            date_ranges.append({ 'start': year_start, 'end': prev_friday })
+
         if 'longueduree'    in config['main']['report_range'].split(','):
-            date_ranges.append({ 'start': previous_monday_4Y, 'end': prev_friday })
+            multi_year_start = prev_friday.replace(day=1).replace(month=1)
+                .replace(year=config['main'].getint('report_year_start'))
+            date_ranges.append({ 'start': multi_year_start, 'end': prev_friday })
 
     # store page content in a dictionary for bookmarks
     Bookmark = namedtuple('Bookmark', 'title page parent')
