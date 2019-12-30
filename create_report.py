@@ -297,7 +297,13 @@ def create_header(config, fig, machine, create_dt, pdf_output_path):
     # draw the header text with dates, etc.
     plt.rcParams["font.family"] = "monospace"
     fig.text(0.62, 0.97, "Rapport {}".format(report_type), fontsize=15)
-    fig.text(0.62, 0.93, "Semaine{} {}".format('s' if len(week_numbers) > 1 else '', week_numbers_str), fontsize=25, fontweight='bold')
+    print(n_days)
+    if n_days > 365:
+        year_str = "Années {}-{}".format(start_date.year, end_date.year)
+        print(year_str)
+        fig.text(0.62, 0.93, year_str, fontsize=25, fontweight='bold')
+    else:
+        fig.text(0.62, 0.93, "Semaine{} {}".format('s' if len(week_numbers) > 1 else '', week_numbers_str), fontsize=25, fontweight='bold')
     fig.text(0.63, 0.895, "du {}".format(start_date.strftime("%d/%m/%Y")), fontsize=20)
     fig.text(0.63, 0.87, "au {}".format(end_date.strftime("%d/%m/%Y")), fontsize=20)
     fig.text(0.63, 0.85, "Généré le {}".format(create_dt.strftime("%d/%m/%Y %H:%M:%S")),
