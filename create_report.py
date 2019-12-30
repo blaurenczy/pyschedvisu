@@ -128,13 +128,14 @@ def create_report(config):
                 local_config['main']['start_date'] = date_range['start'].strftime('%Y%m%d')
                 local_config['main']['end_date'] = date_range['end'].strftime('%Y%m%d')
 
-                # create entry for bookmarks
-                report_type = get_report_type(date_range['start'], date_range['end'])
-                bookmarks.append(Bookmark(title=report_type, page=i_page, parent=machine))
-
                 # create one page of the report
-                create_page(local_config, machine, output_dir, create_dt, pdf_output_path)
-                i_page += 1
+                page_created = create_page(local_config, machine, output_dir, create_dt, pdf_output_path)
+
+                # if a page was created, also create the entry for bookmarks
+                if page_created:
+                    report_type = get_report_type(date_range['start'], date_range['end'])
+                    bookmarks.append(Bookmark(title=report_type, page=i_page, parent=machine))
+                    i_page += 1
 
                 # save the page
                 try:
@@ -212,7 +213,7 @@ def create_page(config, machine, output_dir, create_dt, pdf_output_path):
         create_dt (datetime):   datetime object representing the creation time
         pdf_output_path (str):  path where the output PDF is saved
     Returns:
-        None
+        page_created (bool):    whether or not the page was created
     """
 
     # get the date ranges
@@ -224,7 +225,7 @@ def create_page(config, machine, output_dir, create_dt, pdf_output_path):
     if df is None or len(df) == 0:
         logging.error('No data for {} {} - {} at these dates.'.format(machine,
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')))
-        return
+        return False
 
     # exclude some machines and do some grouping up
     df['Machine'] = df['Machine Group'].str.replace('_NoCT', '')
@@ -235,7 +236,7 @@ def create_page(config, machine, output_dir, create_dt, pdf_output_path):
     if len(df_machine) == 0:
         logging.error('No data for {} {} - {} for this machine at these dates.'.format(machine,
         start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')))
-        return
+        return False
 
     # get the report type string
     report_type = get_report_type(start_date, end_date)
@@ -261,6 +262,8 @@ def create_page(config, machine, output_dir, create_dt, pdf_output_path):
             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
         fig.savefig(im_output_path + '.pdf', orientation='portrait', papertype='a4', format='pdf')
         fig.savefig(im_output_path + '.png', orientation='portrait', papertype='a4', format='png')
+
+    return True
 
 def create_header(config, fig, machine, create_dt, pdf_output_path):
     """
