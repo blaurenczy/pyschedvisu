@@ -1005,7 +1005,7 @@ def create_violin(config, fig, machine, df):
 
     results = vio_ax.violinplot(data, x_positions, showmeans=True, showextrema=True, showmedians=False)
     plt.ylabel('Durée (minutes)')
-    plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=7)
+    plt.xticks(ticks=x_positions, labels=descr_names, rotation=60, fontsize=6)
     plt.xlim([-0.5, i_descr - 0.5])
 
     # adjust the colors
