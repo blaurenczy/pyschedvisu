@@ -298,7 +298,7 @@ def create_header(config, fig, machine, create_dt, pdf_output_path):
     plt.rcParams["font.family"] = "monospace"
     fig.text(0.62, 0.97, "Rapport {}".format(report_type), fontsize=15)
     if n_days > 365:
-        year_str = "Années {}-{}".format(start_date.year, end_date.year)
+        year_str = "{} - {}".format(start_date.year, end_date.year)
         fig.text(0.62, 0.93, year_str, fontsize=25, fontweight='bold')
     else:
         fig.text(0.62, 0.93, "Semaine{} {}".format('s' if len(week_numbers) > 1 else '', week_numbers_str), fontsize=25, fontweight='bold')
