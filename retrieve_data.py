@@ -433,7 +433,8 @@ def fetch_info_for_series_with_batches(config, df_series):
 
             df_series = df_series.drop_duplicates('Series Instance UID')
             # remove series that have the wrong image type from the list of series to fetch
-            df_series = df_series[~df_series['Series Instance UID'].isin(df_series_excl['SeriesInstanceUID'])]
+            if df_series_excl is not None and len(df_series_excl) > 0 and 'SeriesInstanceUID' in df_series_excl.columns:
+                df_series = df_series[~df_series['Series Instance UID'].isin(df_series_excl['SeriesInstanceUID'])]
 
     # remove all duplicates
     df_series = df_series.drop_duplicates('Series Instance UID')
