@@ -117,8 +117,8 @@ def create_report(config):
         # go through each machine
         for machine in machines_list:
 
-            # create a parent entry for bookmarks
-            bookmarks.append(Bookmark(title=machine, page=i_page, parent='Rapport pySchedVisu'))
+            # holds whether or not a page was created for the current machine
+            machine_page_created = False
 
             # go through each date range
             for date_range in date_ranges:
@@ -130,6 +130,12 @@ def create_report(config):
 
                 # create one page of the report
                 page_created = create_page(local_config, machine, output_dir, create_dt, pdf_output_path)
+
+                # create the parent bookmark for the current machine, if not done yet
+                if not machine_page_created and page_created:
+                    # create a parent entry for bookmarks
+                    bookmarks.append(Bookmark(title=machine, page=i_page, parent='Rapport pySchedVisu'))
+                    machine_page_created = True
 
                 # if a page was created, also create the entry for bookmarks
                 if page_created:
