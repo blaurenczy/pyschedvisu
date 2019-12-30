@@ -646,10 +646,17 @@ def plot_day_for_schedule_plot(config, sched_ax, machine, day, i_day, df):
                 fc=colors[i_descr], ec=edge_color, label=study.name + '_prep')
             sched_ax.add_patch(rounded_rect_prep)
 
-            # create the shape and plot it
-            rounded_rect = Rectangle((x, y), box_w, h, fc=colors[i_descr], ec='black',
-                hatch=hatch, alpha=0.3, label=study.name)
-            sched_ax.add_patch(rounded_rect)
+            if len(days_range) > 45:
+                # create the shape and plot it
+                rounded_rect = Rectangle((x, y), box_w, h, fc=colors[i_descr], ec=colors[i_descr],
+                    hatch=hatch, alpha=0.3, label=study.name)
+                sched_ax.add_patch(rounded_rect)
+
+            else:
+                # create the shape and plot it
+                rounded_rect = Rectangle((x, y), box_w, h, fc=colors[i_descr], ec='black',
+                    hatch=hatch, alpha=0.3, label=study.name)
+                sched_ax.add_patch(rounded_rect)
 
         else:
             # create the shape and plot it
