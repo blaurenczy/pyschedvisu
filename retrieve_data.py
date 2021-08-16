@@ -624,17 +624,25 @@ def process_and_merge_info_back_into_series(config, df_series, df_info_ctpt, df_
                     df_info_ctpt_clean = df_info_ctpt_clean.drop(columns=[f + '_start', f + '_end'])
 
         # fix FDG Cerveau series where AcquisitionTime is not correct, therefore ContentTime needs to be used
-        df_fdg_cerveau = df_info_ctpt_clean[df_info_ctpt_clean['SeriesDescription'].str.match('.*FDG Cerveau.*')]
+        df_fdg_cerveau = df_info_ctpt_clean[df_info_ctpt_clean['SeriesDescription'].str.match('.*FDG Cerveau.*min.*')]
         if len(df_fdg_cerveau) > 0:
             # get the start times of each FDG cerveau row
             start_times = pd.to_datetime(df_fdg_cerveau['Start Time'], format='%H%M%S')
             # get the number of seconds for each row
-            duration_seconds = [int(60 * minutes) for minutes in df_fdg_cerveau['SeriesDescription']\
-                .str.extract('.*FDG Cerveau (.+)min.*')[0].str.replace('x1','').astype(int).values]
-            # calculate new end times
-            end_times = [(start_times.iloc[i] + timedelta(seconds=duration_seconds[i])).strftime('%H%M%S')
-                for i in range(len(start_times))]
-            df_info_ctpt_clean.loc[df_fdg_cerveau.index, 'End Time'] = end_times
+            try:
+                duration_seconds = [int(60 * minutes) for minutes in df_fdg_cerveau['SeriesDescription']\
+                    .str.extract('.*FDG Cerveau (.+)min.*')[0].str.replace('x1','').astype(int).values]
+                # calculate new end times
+                end_times = [(start_times.iloc[i] + timedelta(seconds=duration_seconds[i])).strftime('%H%M%S')
+                    for i in range(len(start_times))]
+                df_info_ctpt_clean.loc[df_fdg_cerveau.index, 'End Time'] = end_times
+            except:
+                logging.warning('Could not extract number of minutes from "FDG Cerveau" string.')
+                if 'SeriesDescription' in df_fdg_cerveau.columns:
+                    logging.warning('  [Series Descriptions]:')
+                    for descr in df_fdg_cerveau['SeriesDescription'].tolist():
+                        logging.warning(f'    - "{descr}"')
+
 
         # remove non-informative columns (all NaNs)
         df_info_ctpt_clean = df_info_ctpt_clean.dropna(how='all', axis=1)
