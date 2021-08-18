@@ -151,6 +151,8 @@ def load_transform_and_save_data_from_files(config):
         df_studies_for_day = add_preparation_times(config, df_studies_for_day)
         df_studies_for_day = df_studies_for_day.sort_values(['Start Time', 'Machine Group', 'SUID'])
         # add the time to the previous and to the next study
+        if df_studies_for_day.empty:
+            continue
         df_studies_for_day = add_time_to_prev_and_next(config, df_studies_for_day)
 
         # merge back the extracted studies into the main DataFrame
